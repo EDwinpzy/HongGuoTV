@@ -9,7 +9,7 @@
 | 应用版本 | 1.0.0（versionCode 10000） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
-| 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER` 和 `BACK` |
+| 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER` 和 `BACK`；搜索词使用 ADB 文本注入 |
 
 ## 已验证
 
