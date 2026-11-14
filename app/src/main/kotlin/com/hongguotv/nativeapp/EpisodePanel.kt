@@ -3,8 +3,6 @@ package com.hongguotv.nativeapp
 
 import android.app.Activity
 import android.app.Dialog
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.Window
@@ -22,8 +20,11 @@ class EpisodePanel(
     private fun dp(n: Int)=(n*activity.resources.displayMetrics.density).toInt()
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(6),dp(8),dp(6)) }
     private fun button(value: String,active: Boolean=false,action: ()->Unit)=label(value,16f).apply {
-        id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=dp(46); isFocusable=true; isFocusableInTouchMode=true
-        fun paint(focus: Boolean) { background=GradientDrawable().apply { setColor(if(focus) TvStyle.accent else if(active) Color.rgb(61,39,34) else TvStyle.surface); cornerRadius=dp(6).toFloat() } }
+        id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=dp(48); isFocusable=true; isFocusableInTouchMode=true
+        fun paint(focus: Boolean) {
+            background=TvStyle.control(activity,focus,active,radius=10)
+            setTextColor(if(focus) TvStyle.text else if(active) TvStyle.accentBright else TvStyle.text)
+        }
         paint(false); setOnFocusChangeListener { _,hasFocus -> paint(hasFocus) }; setOnClickListener { action() }
     }
     fun show() {
@@ -39,8 +40,12 @@ class EpisodePanel(
     }
     fun dismiss()=dialog.dismiss()
     private fun render() {
-        val content=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(14),dp(12),dp(14),dp(12)); setBackgroundColor(TvStyle.background) }
-        content.addView(label("选集  /  正在看第 ${current+1} 集",20f))
+        val content=LinearLayout(activity).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(18),dp(16),dp(18),dp(16))
+            background=TvStyle.shape(activity,TvStyle.background,TvStyle.outline,18,1f)
+        }
+        content.addView(label("选集  /  正在看第 ${current+1} 集",22f).apply { setTypeface(null,android.graphics.Typeface.BOLD); setPadding(dp(8),dp(4),dp(8),dp(10)) })
         val actions=LinearLayout(activity)
         val close=button("关闭") { dismiss() }
         lateinit var jump: TextView
