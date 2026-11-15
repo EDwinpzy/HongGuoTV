@@ -10,7 +10,10 @@ package com.hongguotv.nativeapp
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
 import android.content.Context
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.os.Handler
 import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
@@ -19,9 +22,14 @@ import android.text.InputType
 import android.util.Base64
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
@@ -175,10 +183,13 @@ class AccountController(
     private var uploadFailures = 0
     private var lastSyncAt = 0L
     private var lastReservationPull = 0L
+    private var reservationSyncPending = false
     private var pending: Pair<CloudProgress, Int>? = null
     private var lastProgress: Pair<CloudProgress, Int>? = null
     private var draining = false
     private var dialog: AlertDialog? = null
+    private var choiceDialog: Dialog? = null
+    private var qrDialog: Dialog? = null
     var onHistoryChanged: (() -> Unit)? = null
 
     val signedIn
@@ -202,7 +213,7 @@ class AccountController(
     fun historyRows(): List<CloudProgress> = if (signedIn) history.toList() else emptyList()
 
     fun refreshHistory() {
-        refresh(false)
+        refresh()
     }
 
     internal fun reservationState(online: Boolean): ReservationState =
@@ -215,7 +226,7 @@ class AccountController(
             reservationState(false).rows.any {
                 it.series.id == work.series.id || it.series.id == "reservation:${work.series.id}"
             } -> "已预约"
-            work.series.id in acceptedReservations -> "刷新预约状态"
+            work.series.id in acceptedReservations -> "正在自动确认预约"
             else -> "预约"
         }
 
@@ -235,8 +246,8 @@ class AccountController(
             return
         }
         if (work.series.id in acceptedReservations) {
-            refreshReservations()
-            done("正在刷新预约列表，请稍后核对；未显示前暂不能确认预约生效。")
+            syncReservationsIfStale(force = true)
+            done("正在自动同步预约列表；未显示前暂不能确认预约生效。")
             return
         }
         task(
@@ -244,7 +255,8 @@ class AccountController(
             {
                 acceptedReservations += work.series.id
                 changed()
-                done("红果已接受预约请求，尚未在账号列表确认。请刷新预约状态，或在手机红果核对是否新增。")
+                syncReservationsIfStale(force = true)
+                done("红果已接受预约请求，正在自动同步确认；也可在手机红果核对是否新增。")
             },
             { done("预约未完成：${safeError(it)}") },
         )
@@ -397,7 +409,17 @@ class AccountController(
                                         )
                                     },
                                 ))
+                    if (result.isFailure) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        // Keep the normal five-minute cadence, but retry a failed pull
+                        // after one minute instead of leaving an error for five.
+                        lastReservationPull = now - (4 * 60 * 1000L)
+                    }
                     changed()
+                    if (reservations.values.none { it.loading } && reservationSyncPending) {
+                        reservationSyncPending = false
+                        syncReservationsIfStale(force = true)
+                    }
                 }
             }
         }
@@ -408,7 +430,10 @@ class AccountController(
     }
 
     val showing
-        get() = dialog?.isShowing == true
+        get() =
+            dialog?.isShowing == true ||
+                choiceDialog?.isShowing == true ||
+                qrDialog?.isShowing == true
 
     init {
         val token = generation
@@ -420,9 +445,12 @@ class AccountController(
                 accountRestoreFailed = saved.isFailure
                 credentials = saved.getOrNull()
                 status =
-                    if (credentials != null) "登录态已恢复，打开账号页面刷新云端记录"
+                    if (credentials != null) "登录态已恢复，正在自动同步云端记录"
                     else if (saved.isFailure) "登录态无法读取，请重新登录" else "未登录"
-                if (credentials != null) refresh(false) else changed()
+                if (credentials != null) {
+                    refresh()
+                    syncReservationsIfStale(force = true)
+                } else changed()
             }
         }
     }
@@ -456,34 +484,38 @@ class AccountController(
             toast("账号操作进行中，请稍候")
             return
         }
-        val signed = credentials != null
-        val choices =
-            if (signed) arrayOf("云端继续观看（最近 50 部）", "刷新账号和云端记录", "退出红果账号")
-            else arrayOf("使用红果 App 扫码登录", "手机号 + 验证码登录")
+        if (!signedIn) {
+            qrLogin()
+            return
+        }
+        choiceDialog?.dismiss()
+        val next =
+            TvDialogUi.choice(
+                activity,
+                profile?.let { "红果账号 · ${it.nickname}" } ?: "红果账号",
+                listOf("云端继续观看（最近 50 部 · 自动同步）", "退出红果账号"),
+                extra = "同步状态",
+                onChoice = { index ->
+                    when (index) {
+                        0 -> showHistory()
+                        1 -> logout()
+                    }
+                },
+                onExtra = { syncStatus() },
+            )
+        choiceDialog = next
+        next.setOnDismissListener { if (choiceDialog === next) choiceDialog = null }
+        next.show()
+    }
+
+    private fun syncStatus() {
         showDialog(
             AlertDialog.Builder(activity)
-                .setTitle(profile?.let { "红果账号 · ${it.nickname}" } ?: "红果账号（测试功能）")
-                .setItems(choices) { _, index ->
-                    if (!signed) {
-                        if (index == 0) qrLogin() else phone()
-                    } else
-                        when (index) {
-                            0 -> showHistory()
-                            1 -> refresh(true)
-                            2 -> logout()
-                        }
-                }
-                .setNeutralButton("同步状态") { _, _ ->
-                    showDialog(
-                        AlertDialog.Builder(activity)
-                            .setTitle("账号同步状态")
-                            .setMessage(
-                                "$status\n\n登录后，电视播放的进度会自动上传。手机记录可从「云端继续观看」打开。平台接口可能变化，首次使用请对照手机核对集数和时间。\n本机历史与云端记录分别保留；退出登录会停止上传。"
-                            )
-                            .setPositiveButton("关闭", null)
-                    )
-                }
-                .setNegativeButton("关闭", null)
+                .setTitle("账号同步状态")
+                .setMessage(
+                    "$status\n\n登录后，电视播放的进度会自动上传。手机记录可从「云端继续观看」打开。平台接口可能变化，首次使用请对照手机核对集数和时间。\n本机历史与云端记录分别保留；退出登录会停止上传。"
+                )
+                .setPositiveButton("关闭", null)
         )
     }
 
@@ -859,8 +891,10 @@ class AccountController(
         unconfirmedFavorites.clear()
         reservations = emptyMap()
         acceptedReservations.clear()
+        reservationSyncPending = false
+        lastReservationPull = 0
         generation++
-        status = "已登录，正在读取云端记录"
+        status = "已登录，正在自动同步云端记录"
         lastUpload = 0
         lastEpisode = ""
         lastProgress = null
@@ -868,10 +902,13 @@ class AccountController(
         draining = false
         changed()
         toast("已登录 ${account.nickname}")
-        refresh(true)
+        refresh()
+        syncReservationsIfStale(force = true)
     }
 
     private fun qrLogin() {
+        status = "正在生成扫码登录二维码"
+        toast("正在生成登录二维码…")
         val login = WebLogin(http)
         task(
             { login.qr() },
@@ -882,47 +919,142 @@ class AccountController(
                     toast("登录二维码无法显示，请重试")
                     return@task
                 }
-                val size = (300 * activity.resources.displayMetrics.density).toInt()
-                val image =
-                    android.widget.ImageView(activity).apply {
-                        setImageBitmap(bitmap)
-                        adjustViewBounds = true
-                        setBackgroundColor(android.graphics.Color.WHITE)
-                        layoutParams =
-                            android.widget.LinearLayout.LayoutParams(size, size).apply {
-                                gravity = android.view.Gravity.CENTER_HORIZONTAL
-                            }
+                val density = activity.resources.displayMetrics.density
+                fun px(value: Int) = (value * density).toInt()
+                fun label(value: String, size: Float, color: Int) =
+                    TextView(activity).apply {
+                        text = value
+                        textSize = size
+                        setTextColor(color)
+                        includeFontPadding = false
                     }
                 val panel =
-                    android.widget.LinearLayout(activity).apply {
-                        orientation = android.widget.LinearLayout.VERTICAL
-                        setPadding(24, 16, 24, 16)
-                        addView(image)
-                        addView(
-                            android.widget.TextView(activity).apply {
-                                text = "用手机红果 App：我的 → 右上角菜单 → 扫一扫\n扫码后请在手机确认登录"
-                                textSize = 18f
-                                gravity = android.view.Gravity.CENTER
-                                setPadding(0, 12, 0, 0)
-                            }
+                    LinearLayout(activity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(px(22), px(20), px(22), px(16))
+                        background = TvStyle.panel(activity, 18)
+                    }
+                panel.addView(
+                    label("红果账号扫码登录", 22f, TvStyle.text).apply {
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    },
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+                panel.addView(
+                    label("使用手机红果 App 确认登录", 14f, TvStyle.mutedBright).apply {
+                        setPadding(0, px(5), 0, px(14))
+                    },
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+                val body = LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                val frame = FrameLayout(activity).apply {
+                    setPadding(px(12), px(12), px(12), px(12))
+                    background = TvStyle.shape(
+                        activity,
+                        android.graphics.Color.WHITE,
+                        TvStyle.outline,
+                        16,
+                        1f,
+                    )
+                }
+                frame.addView(
+                    ImageView(activity).apply {
+                        setImageBitmap(bitmap)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        contentDescription = "红果账号登录二维码"
+                    },
+                    FrameLayout.LayoutParams(-1, -1),
+                )
+                body.addView(frame, LinearLayout.LayoutParams(px(274), px(274)))
+                val info = LinearLayout(activity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(px(24), 0, 0, 0)
+                }
+                info.addView(
+                    label("手机红果 App", 14f, TvStyle.accentBright).apply {
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        letterSpacing = .04f
+                    }
+                )
+                info.addView(
+                    label("扫码后请在手机上确认登录", 19f, TvStyle.text).apply {
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        setPadding(0, px(8), 0, px(16))
+                    }
+                )
+                info.addView(label("我的  →  右上角菜单  →  扫一扫", 15f, TvStyle.text))
+                val ttl = qr.expiresIn.coerceIn(1, 300)
+                val minutes = (ttl + 59) / 60
+                info.addView(
+                    label("二维码约 $minutes 分钟内有效", 13f, TvStyle.muted).apply {
+                        setPadding(0, px(12), 0, px(18))
+                    }
+                )
+                info.addView(
+                    label("正在等待扫码…", 14f, TvStyle.accentBright).apply {
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    }
+                )
+                body.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
+                panel.addView(body, LinearLayout.LayoutParams(-1, -2))
+                lateinit var current: Dialog
+                val close =
+                    label("关闭", 15f, TvStyle.text).apply {
+                        id = View.generateViewId()
+                        gravity = Gravity.CENTER
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        setPadding(px(20), px(10), px(20), px(10))
+                        minHeight = px(46)
+                        contentDescription = "关闭扫码登录"
+                    }
+                fun paintClose(focused: Boolean) {
+                    close.background = TvStyle.control(activity, focused, radius = 10)
+                    close.setTextColor(TvStyle.text)
+                }
+                paintClose(false)
+                close.setOnFocusChangeListener { _, focused -> paintClose(focused) }
+                close.setOnClickListener { current.dismiss() }
+                val actions =
+                    LinearLayout(activity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.END
+                        setPadding(0, px(14), 0, 0)
+                    }
+                actions.addView(close, LinearLayout.LayoutParams(px(132), px(48)))
+                panel.addView(actions, LinearLayout.LayoutParams(-1, -2))
+                current =
+                    Dialog(activity).apply {
+                        requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+                        setContentView(panel)
+                        window?.setBackgroundDrawable(
+                            ColorDrawable(android.graphics.Color.TRANSPARENT)
                         )
                     }
-                showDialog(
-                    AlertDialog.Builder(activity)
-                        .setTitle("红果官方扫码登录")
-                        .setView(panel)
-                        .setNegativeButton("取消", null)
-                )
-                val current = dialog ?: return@task
+                val width =
+                    (activity.resources.displayMetrics.widthPixels * .60f)
+                        .toInt()
+                        .coerceAtMost(px(720))
+                current.setOnShowListener {
+                    current.window?.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    close.requestFocus()
+                }
+                qrDialog?.dismiss()
+                qrDialog = current
                 val token = generation
                 val deadline =
-                    android.os.SystemClock.elapsedRealtime() + qr.expiresIn.coerceIn(1, 300) * 1000L
+                    android.os.SystemClock.elapsedRealtime() + ttl * 1000L
                 var cancelled = false
                 busy = true
                 status = "等待手机确认扫码登录"
                 current.setOnDismissListener {
                     cancelled = true
                     login.cancel()
+                    if (qrDialog === current) qrDialog = null
                     if (token == generation) {
                         busy = false
                         status = "已取消扫码登录"
@@ -934,6 +1066,7 @@ class AccountController(
                     cancelled = true
                     current.setOnDismissListener(null)
                     login.cancel()
+                    if (qrDialog === current) qrDialog = null
                     if (token == generation) busy = false
                     current.dismiss()
                 }
@@ -976,9 +1109,7 @@ class AccountController(
                                                         .setPositiveButton("重新扫码") { _, _ ->
                                                             qrLogin()
                                                         }
-                                                        .setNegativeButton("返回账号页") { _, _ ->
-                                                            show()
-                                                        }
+                                                        .setNegativeButton("关闭", null)
                                                 )
                                             },
                                         )
@@ -992,12 +1123,13 @@ class AccountController(
                                             .setTitle("扫码登录未完成")
                                             .setMessage(status)
                                             .setPositiveButton("重新扫码") { _, _ -> qrLogin() }
-                                            .setNegativeButton("返回账号页") { _, _ -> show() }
+                                            .setNegativeButton("关闭", null)
                                     )
                                 }
                         }
                     }
                 }
+                current.show()
                 main.postDelayed({ poll() }, 1500)
             },
         )
@@ -1025,11 +1157,11 @@ class AccountController(
         }
     }
 
-    private fun refresh(showResult: Boolean) {
+    private fun refresh() {
         val account = credentials ?: return
         if (busy || closed) return
         lastSyncAt = android.os.SystemClock.elapsedRealtime()
-        status = "正在同步账号记录…"
+        status = "正在自动同步账号记录…"
         task(
             {
                 // All network reads happen on the worker. Profile must succeed (it also
@@ -1043,11 +1175,15 @@ class AccountController(
             },
             { (user, rows, cloudFavorites) ->
                 profile = user
+                android.util.Log.i(
+                    "HongguoAccount",
+                    "auto sync history=${rows?.size ?: -1} favorites=${cloudFavorites?.size ?: -1}",
+                )
                 if (rows != null) {
                     historyLoaded = true
                     history =
                         rows.distinctBy { it.series.id }.sortedByDescending { it.updatedAt }.take(50)
-                    status = "已读取 ${history.size} 部云端观看记录"
+                    status = "云端记录已自动同步 · ${history.size} 部观看记录"
                     // Two-way history sync: fold every cloud checkpoint into the local shelf.
                     // Newest timestamp wins; local-only entries (never in the cloud) survive.
                     // Rows the user deleted here are tombstoned and stay out (the phone's
@@ -1072,14 +1208,10 @@ class AccountController(
                 if (cloudFavorites != null) syncFavorites(account, cloudFavorites)
                 if (rows != null) syncHistory(account, history)
                 changed()
-                if (showResult) {
-                    toast(status)
-                    show()
-                }
             },
             {
+                android.util.Log.w("HongguoAccount", "auto sync failed: ${safeError(it)}")
                 changed()
-                toast(safeError(it))
             },
         )
         changed()
@@ -1287,15 +1419,9 @@ class AccountController(
         store.saveDeletedHistory(store.deletedHistory() + ids)
     }
 
-    /** Manual refresh from the reservation page's button: bypasses the throttle. */
-    fun refreshReservationsNow() {
-        if (!signedIn) return
-        refreshReservations()
-    }
-
     private fun showHistory() {
         if (history.isEmpty()) {
-            toast("暂无已读取的云端记录，请先刷新")
+            toast("云端记录正在自动同步，请稍候")
             return
         }
         val snapshot = history
@@ -1328,6 +1454,7 @@ class AccountController(
         unconfirmedFavorites.clear()
         reservations = emptyMap()
         acceptedReservations.clear()
+        reservationSyncPending = false
         pending = null
         lastProgress = null
         draining = false
@@ -1346,31 +1473,30 @@ class AccountController(
         }
     }
 
-    /** Refresh reservations for the TV strip (upcoming category only, phone-side data).
-     *  Throttled like syncIfStale: a once-per-session guard would freeze the strip at
-     *  whatever the phone had at login time. */
-    fun refreshReservationsUpcoming() {
-        if (!signedIn) return
-        val state = reservationState(false)
-        if (state.loading) return
+    /** Automatic reservation sync: both account categories refresh in the background. */
+    fun syncReservationsIfStale(force: Boolean = false) {
+        if (!signedIn || closed) return
+        if (reservations.values.any { it.loading }) {
+            if (force) reservationSyncPending = true
+            return
+        }
         val now = android.os.SystemClock.elapsedRealtime()
-        if (state.loaded && lastReservationPull != 0L && now - lastReservationPull < 5 * 60 * 1000L) return
+        if (!force && lastReservationPull != 0L && now - lastReservationPull < 5 * 60 * 1000L) return
         lastReservationPull = now
         refreshReservations()
     }
 
     /**
-     * Periodic re-sync when the user enters the local shelves (favorites/history):
-     * the login-time sync only folds what the cloud held at that moment — changes the
-     * phone made afterwards (new favorites, watch progress) arrive here. Throttled to
-     * 90 seconds: long enough that tab-hopping doesn't hammer the endpoints, short
-     * enough that a phone-side favorite made a minute ago shows up on the next visit.
+     * Periodic background sync for the foreground app: login-time data alone would go
+     * stale when the phone changes favorites or watch progress. The main-thread tick
+     * calls this continuously; the 90-second guard coalesces calls and [busy] prevents
+     * overlapping requests.
      */
     fun syncIfStale() {
         if (!signedIn || busy || closed) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (lastSyncAt != 0L && now - lastSyncAt < 90 * 1000L) return
-        refresh(false)
+        refresh()
     }
 
     fun upload(progress: CloudProgress, episodes: Int, force: Boolean) {
@@ -1447,6 +1573,8 @@ class AccountController(
         generation++
         pending = null
         dialog?.dismiss()
+        choiceDialog?.dismiss()
+        qrDialog?.dismiss()
         http.dispatcher.cancelAll()
         worker.execute {
             if (account != null && final != null)

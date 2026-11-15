@@ -82,6 +82,8 @@ class MainActivity: Activity() {
     private var tabSubtitle: TextView?=null
     /** Reservation tab (8) status line: re-rendered in place when the refresh lands. */
     private var tabStatus: TextView?=null
+    /** Settings row showing the live account label after QR login/profile sync. */
+    private var accountButton: TextView?=null
     /** Theme sub-category bar for the short/comic tabs: "" = 全部 (default feed). */
     private var themeSlug=""
     private val themeButtons=mutableMapOf<String,View>()
@@ -265,6 +267,10 @@ class MainActivity: Activity() {
     private val tick=object: Runnable {
         override fun run() {
             if(!foreground || isDestroyed) return
+            if(::cloudAccount.isInitialized) {
+                cloudAccount.syncIfStale()
+                cloudAccount.syncReservationsIfStale()
+            }
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
                 if(hud.visibility==View.VISIBLE) updatePlaybackText()
@@ -337,7 +343,10 @@ class MainActivity: Activity() {
         }
         // Two-way sync: cloud-side changes (phone watch/favorite) must re-render the
         // local shelves; TV-side favorite toggles mirror to the account immediately.
-        cloudAccount.onHistoryChanged={ refreshLibraryCards("",false) }
+        cloudAccount.onHistoryChanged={
+            accountButton?.text="红果账号  ·  ${cloudAccount.accountLabel}"
+            refreshLibraryCards("",false)
+        }
         updater=AppUpdater(this) { foreground && library.isLoaded && screen=="catalog" && !tvTools.showing && !cloudAccount.showing }
         connectivity=getSystemService(ConnectivityManager::class.java)
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback); networkRegistered=true }
@@ -391,7 +400,7 @@ class MainActivity: Activity() {
         homeScreen=null; selectionPreview=null; catalogScroll=null; settingsScroll=null
         nav.clear(); rankButtons.clear(); rankTitle=null
         historyManage=null; rankRefresh=null; rankSubtitle=null; collectionBack=null; favoriteBadges.clear()
-        favoriteStatus=null; favoriteCheck=null; tabRefresh=null; tabSubtitle=null; tabStatus=null
+        favoriteStatus=null; favoriteCheck=null; tabRefresh=null; tabSubtitle=null; tabStatus=null; accountButton=null
         themeButtons.clear(); themeScroll=null
         catalogCards.clear(); cardImages.clear()
         tvSuggestList=null; tvSuggestTitle=null; tvQueryView=null; tvSearchButton=null; tvBackspace=null; tvClear=null; tvFirstKey=null
@@ -512,7 +521,7 @@ class MainActivity: Activity() {
      *  (loading / loaded count / error). Re-rendered in place when a refresh lands. */
     private fun reservationStatusLine(): String =
         if(!cloudAccount.signedIn) "登录红果账号后，这里会显示手机端的预约"
-        else "同步手机红果 App 的待上线预约 · ${cloudAccount.reservationsUpcomingStatus()}"
+        else "自动同步手机红果 App 的预约 · ${cloudAccount.reservationsUpcomingStatus()}"
     private fun localItems(): List<Series> = when(collection) {
         "later" -> library.later()
         "updates" -> library.favorites().filter { (library.favoriteUpdate(it.id)?.added ?: 0)>0 }
@@ -560,7 +569,6 @@ class MainActivity: Activity() {
         // inside); entering either local shelf (favorites/history/reservations) re-syncs
         // the account when the last pull is stale: phone-side favorites/watch progress
         // made after login arrive here, keeping the shelves genuinely two-way.
-        if(tab==8) cloudAccount.refreshReservationsUpcoming()
         if(tab==6 || tab==7 || tab==8) cloudAccount.syncIfStale()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
         val top=row().apply { setPadding(0,dp(2),0,dp(10)) }
@@ -743,17 +751,6 @@ class MainActivity: Activity() {
                             library.clearHistory(); cloudAccount.onLocalHistoryRemoved(ids); catalogFocus=""; showCatalog()
                         }
                     }
-                }.apply { nextFocusUpId=nav[tab].id }
-            }
-            if(tab==8) {
-                // Refresh only re-pulls the phone's list; the async result arrives through
-                // onHistoryChanged → refreshLibraryCards, which rebuilds the grid in place.
-                // A full showCatalog() here would destroy this focused button mid-click,
-                // focus would flash onto the nav bar, and the nav listener would
-                // switchTab(0) — the reported "refresh kicks me back to the home page".
-                tabRefresh=addButton(heading,"刷新预约") {
-                    if(!cloudAccount.signedIn) { tvTools.info("未登录","登录红果账号后，这里会显示手机端的预约。",tabRefresh); return@addButton }
-                    cloudAccount.refreshReservationsNow()
                 }.apply { nextFocusUpId=nav[tab].id }
             }
             container.addView(heading)
@@ -959,7 +956,7 @@ class MainActivity: Activity() {
             // In-place rebuild (refreshLibraryCards): focus sits on a control that lives
             // outside catalogBody and survived the rebuild — a nav bar button (e.g. focus
             // resting on 我的预约 while its async data lands) or a heading button
-            // (刷新预约/管理记录/检查更新). Keep it there; an async data landing must
+            // (管理记录/检查更新). Keep it there; an async data landing must
             // never move the user's focus.
             nav.any { it.hasFocus() } || tabRefresh?.hasFocus()==true || historyManage?.hasFocus()==true || favoriteCheck?.hasFocus()==true -> Unit
             focusNav -> nav[tab].requestFocus()
@@ -1324,6 +1321,7 @@ class MainActivity: Activity() {
         danmakuStyleButton=setting(playback,"弹幕样式  ·  ${danmakuStyleSummary()}") { showDanmakuStylePicker(danmakuStyleButton,false) }
         lateinit var account: TextView
         account=setting(device,"红果账号  ·  ${cloudAccount.accountLabel}") { cloudAccount.show() }
+        accountButton=account
         lateinit var backup: TextView
         backup=setting(device,"手机备份与恢复") {
             runCatching { LibraryBackup.encode(library.snapshot()) }.onSuccess { encoded ->
