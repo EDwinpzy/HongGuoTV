@@ -92,6 +92,8 @@ class DanmakuOverlay(context: Context) : View(context) {
 
         /** 真实弹幕下一条距当前 8s 以上视为“稀疏”，启动循环补位。 */
         private const val GAP_FILL_MS = 8_000L
+        /** 弹幕仅需文字滚动，30fps 足够；避免每帧整层重绘拖慢 TV 视频合成。 */
+        private const val FRAME_INTERVAL_MS = 33L
     }
     private val shots = mutableListOf<Shot>()
     private val pending = mutableListOf<Pending>()
@@ -164,7 +166,7 @@ class DanmakuOverlay(context: Context) : View(context) {
         if (running) return
         running = true
         lastFrameMs = SystemClock.elapsedRealtime()
-        postInvalidateOnAnimation()
+        postInvalidateDelayed(FRAME_INTERVAL_MS)
     }
 
     private fun currentPlayhead(): Long {
@@ -230,7 +232,7 @@ class DanmakuOverlay(context: Context) : View(context) {
             canvas.drawText(s.text, s.x, y, strokePaint)
             canvas.drawText(s.text, s.x, y, paint)
         }
-        postInvalidateOnAnimation()
+        postInvalidateDelayed(FRAME_INTERVAL_MS)
     }
 
     /** 发射一条弹幕进滚动状态（行全忙时丢弃——短剧弹幕密度低，罕见）。 */
