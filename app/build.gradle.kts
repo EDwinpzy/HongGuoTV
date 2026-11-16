@@ -18,7 +18,7 @@ android {
         // v1.0.8: icon fine inside the APK, never picked up by the launcher). Increasing codes mean
         // Android now rejects downgrade installs (use `adb install -d` or uninstall to go back);
         // the in-app updater still decides "newer" by versionName comparison, not by code.
-        val name = System.getenv("HONGGUOTV_VERSION_NAME") ?: "1.1.0"
+        val name = System.getenv("HONGGUOTV_VERSION_NAME") ?: "1.1.1"
         fun leadingInt(part: String?) = part?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 0
         val parts = name.split('.')
         versionCode = leadingInt(parts.getOrNull(0)) * 10000 + leadingInt(parts.getOrNull(1)) * 100 + leadingInt(parts.getOrNull(2))
@@ -58,4 +58,5 @@ dependencies {
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
+    testImplementation("junit:junit:4.13.2")
 }

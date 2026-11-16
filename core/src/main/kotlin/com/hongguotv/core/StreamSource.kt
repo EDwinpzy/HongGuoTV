@@ -56,10 +56,18 @@ interface StreamSource {
          * video_model second (kept as a probe - the endpoint may come back), the
          * website's public MP4 last (360p, plain, immune to App API breakage).
          */
-        internal fun default(transport: AppApiTransport, http: okhttp3.OkHttpClient, webUa: String, site: String): List<StreamSource> =
+        internal fun default(
+            transport: AppApiTransport,
+            http: okhttp3.OkHttpClient,
+            webUa: String,
+            site: String,
+            webFallback: StreamSource = WebFallbackStreamSource(http, webUa, site),
+        ): List<StreamSource> =
             listOf(
+                MobilePlaybackStreamSource(http),
                 MultiVideoModelStreamSource(transport, http),
                 AppApiStreamSource(transport),
+                webFallback,
                 PublicMp4StreamSource(http, webUa, site),
             )
     }

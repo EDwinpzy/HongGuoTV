@@ -23,6 +23,8 @@ internal class Signer(
     private val processNonce: String = java.util.Base64.getUrlEncoder()
         .withoutPadding()
         .encodeToString(ByteArray(18).also(java.security.SecureRandom()::nextBytes)),
+    /** v04.10.03 playback signing (upstream 0.16.5): branch 12 and the v5 carrier. */
+    private val mobileV5: Boolean = false,
 ) {
     private val processStarted: Long = clock()
     data class Request(val url: String, val headers: Map<String, String>, val body: ByteArray?)
@@ -53,7 +55,11 @@ internal class Signer(
     fun branch(query: String, body: ByteArray?, ts: Int): Int {
         val ivV = iv(sm3(query.toByteArray()), body?.let { digest("MD5", it) } ?: ByteArray(16), ts)
         val low = ivV and 15
-        return low - (((low * 171) shr 9) * 3)
+        return if (mobileV5) {
+            if (low == 12) 0 else 1
+        } else {
+            low - (((low * 171) shr 9) * 3)
+        }
     }
     private fun sumMd5(data: ByteArray): Int {
         var check = 0x20220420
@@ -66,6 +72,7 @@ internal class Signer(
     }
     fun hashF13(query: ByteArray, body: ByteArray, ts: Int): ByteArray {
         val ivV = iv(query, body, ts)
+        if (mobileV5) return hashF13V5(ivV, query, body, ts)
         val low = ivV and 15
         val ivV0 = (low * 171) shr 9
         val branch = low - ivV0 * 3
@@ -112,6 +119,50 @@ internal class Signer(
         val ret = (0..7).fold(byteArrayOf()) { a, i -> a + be32(d[i] + initial[i]) }
         for (i in 0 until 16) ret[i] = (ret[i].u() xor ret[i + 16].u()).toByte()
         return ret.copyOf(16) + le32(sumMd5(ret.copyOf(16)))
+    }
+
+    private fun hashF13V5(ivV: Int, query: ByteArray, body: ByteArray, ts: Int): ByteArray {
+        require((ivV and 15) == 12) { "Unsupported v5 hash branch" }
+        val countV1 = (0x9d4a97c2.toInt() + ts + 1) and 255
+        val countV2 = 0x9d4a97c2.toInt() + ts
+        val tt = VendorConstants.hashTable.map { ror(it, countV1) }
+        val shift = (countV2 + 2) and 7
+        val pad = intArrayOf(0xfa,0x45,0x61,0xd7)
+            .map { ((it or (it shl 8)) shr shift).toByte() }.toByteArray()
+        val data = query + body + le32(ts) + pad + hex("00000000000001a0")
+        val di = (data.indices step 4).map { data.i32(it) }.toMutableList()
+        for (i in 0 until 112) {
+            val x = di[i + 1]
+            val y = di[i + 14]
+            di.add(
+                di[i] + di[i + 9] +
+                    (rol(x, 14) xor rol(x, 25) xor (x ushr 3)) +
+                    (rol(y, 13) xor rol(y, 15) xor (y ushr 10))
+            )
+        }
+        val initial = intArrayOf(
+            0x7aba4fc8, 0x67166507, 0x6403fa00, 0x340f512f,
+            984304912, 3005047866L.toInt(), 2874125293L.toInt(),
+            2152413264L.toInt(),
+        ).map { ror(it, countV2) }
+        val chosen = intArrayOf(96,1,3,4,0,6,5,2,0,7,7)
+        val d = initial.toMutableList()
+        for (i in 0 until chosen[0]) {
+            val base = 0x9d4a97c2.toInt() + i
+            val n1 = ((d[chosen[3]] xor d[chosen[4]]) and d[chosen[1]]) xor d[chosen[3]]
+            val n2 = rol(d[chosen[1]], 26) xor rol(d[chosen[1]], 21) xor rol(d[chosen[1]], 7)
+            val n4 = di[base and 127] + n1 + n2 + tt[base and 63] + d[chosen[5]]
+            val n5 = rol(d[chosen[2]], 30) xor rol(d[chosen[2]], 19) xor rol(d[chosen[2]], 10)
+            val n6 = (d[chosen[2]] and d[chosen[6]]) or
+                ((d[chosen[2]] or d[chosen[6]]) and d[chosen[7]])
+            val old = d[chosen[9]]
+            d.add(0, d.removeAt(7))
+            d[chosen[10]] = n5 + n6 + n4
+            d[chosen[8]] = old + n4
+        }
+        val ret = (0..7).fold(byteArrayOf()) { a, i -> a + be32(d[i] + initial[i]) }
+        val folded = xor(ret.copyOfRange(0, 16), ret.copyOfRange(16, 32))
+        return folded + le32(sumMd5(folded) or 0x20)
     }
 
     // hashF13 branch 2: md5V3-variant compression driven by the Branch2 tables.
@@ -234,6 +285,55 @@ internal class Signer(
         val prefix = (0 until 20 step 4).fold(byteArrayOf()) { a,i -> a+le32(versionBytes.i32(i,true) xor ts) }
         return (prefix+byteArrayOf(r.toByte(),(r shr 8).toByte(),0,1)+encrypted).base64()
     }
+
+    private fun medusaV5(url: String, body: ByteArray?, ts: Int, who: Map<String, String>): String {
+        val query = sm3(url.substringAfter('?').toByteArray(Charsets.UTF_8))
+        val f13 = hashF13(query, body?.let { digest("MD5", it) } ?: ByteArray(16), ts)
+        val flags = ByteArray(8)
+        val version = who.getValue("version_name")
+        val deviceInfo = proto(
+            f(1, 1, "sint"), f(2, 2, "sint"), f(3, "8662"),
+            f(4, who.getValue("device_id")), f(5, processNonce), f(6, "!noperm!"),
+            f(12, "Asia/Shanghai,8"), f(13, "zh_CN"),
+            f(22, who.getValue("os_version")), f(25, processStarted, "sint"),
+            f(30, who.getValue("device_type")), f(31, "HONOR"),
+            f(32, who.getValue("device_type")), f(34, "HONOR"),
+        )
+        val env = proto(
+            f(6, "v04.10.03.04-bugfix"), f(8, who.getValue("channel")),
+            f(12, deviceInfo), f(14, version),
+        )
+        val message = proto(
+            f(1, V5Constants.magic), f(2, 5, "sint"), f(3, unsigned(rand()), "sint"),
+            f(4, "8662"), f(5, who.getValue("device_id")),
+            f(6, V5Constants.license), f(7, version),
+            f(8, "v04.10.03-ml-android"), f(9, 0x040a0300, "sint"),
+            f(10, flags), f(12, ts, "sint"), f(13, f13), f(14, query.copyOf(6)),
+            f(15, proto(f(1, 1, "sint"), f(2, 1, "sint"), f(3, 1, "sint"), f(5, 1, "sint"))),
+            f(17, ts, "sint"), f(20, "none"), f(21, 377, "sint"), f(23, env),
+            f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
+        )
+        val nonce = rand()
+        val key = V5Constants.signKey
+        val hash = sm3(key + le32(nonce) + key)
+        val high = (nonce ushr 16) and 255
+        val seed = le32((((high shl 11) or (nonce ushr 24)) xor (high ushr 5) xor high).inv())
+        val transformed = (flags + xmxor(message, hash)).reversedArray()
+        for (i in transformed.indices) transformed[i] =
+            (transformed[i].u() xor seed[i.inv() and 3].u()).toByte()
+        val check = 0x18000001 or ((query[0].u() and 63) shl 14) or
+            ((f13[0].u() and 63) shl 8)
+        val packed = byteArrayOf(0xca.toByte()) + le32(rand()) + le32(check) + transformed +
+            byteArrayOf((nonce ushr 16).toByte(), (nonce ushr 24).toByte())
+        val encrypted = AesV3(
+            digest("MD5", key.copyOfRange(0, 16)), ts, v5 = true,
+        ).encrypt(packed, digest("MD5", key.copyOfRange(16, 32)))
+        val prefix = le32(5) + V5Constants.magic
+        for (i in prefix.indices) prefix[i] =
+            (prefix[i].u() xor le32(ts)[i and 3].u()).toByte()
+        return (prefix + byteArrayOf(nonce.toByte(), (nonce ushr 8).toByte(), 0, 1) + encrypted).base64()
+    }
+
     fun helios(ts: Int): String {
         val random = rand()
         val ascii = digest("MD5",le32(random)+"8662".toByteArray()).hex().toByteArray()
@@ -243,7 +343,8 @@ internal class Signer(
             var x8 = (java.lang.Long.rotateRight(b8,8)+b0) xor i.toLong()
             words.add(x8); x8 = x8 xor java.lang.Long.rotateRight(b0,61); table.add(x8); b0=x8; b8=words.removeAt(0)
         }
-        val text = "$ts-1588093228-8662".toByteArray(); val padding = 16 - text.size % 16
+        val license = if (mobileV5) V5Constants.license else "1588093228"
+        val text = "$ts-$license-8662".toByteArray(); val padding = 16 - text.size % 16
         val data = text+ByteArray(padding) { padding.toByte() }
         var output = le32(random)
         for (at in data.indices step 16) {
@@ -275,37 +376,55 @@ internal class Signer(
      * legacy [sign] pins branch 0 for the retired drpys chain - keep that behavior).
      * The query profile comes from the caller (AppApiTransport's 73532 profile).
      */
-    fun signPlayback(base: String, values: Map<String,String>, body: ByteArray?, userAgent: String = VendorConstants.VIDEO_UA): Request {
-        val now = clock(); val ts = (now / 1000).toInt()
+    fun signPlayback(
+        base: String,
+        values: Map<String,String>,
+        body: ByteArray?,
+        userAgent: String = VendorConstants.VIDEO_UA,
+    ): Request = signPlaybackAt(base, values, body, userAgent, clock())
+
+    fun signPlayback(base: String, values: Map<String,String>, body: ByteArray?, now: Long): Request =
+        signPlaybackAt(base, values, body, VendorConstants.VIDEO_UA, now)
+
+    private fun signPlaybackAt(
+        base: String,
+        values: Map<String,String>,
+        body: ByteArray?,
+        userAgent: String,
+        now: Long,
+    ): Request {
+        val ts = (now / 1000).toInt()
         var ticket = now; var query: String
-        for (offset in 0..127) {
+        for (offset in 0..(if (mobileV5) 1023 else 127)) {
             ticket = now + offset; query = Signer.encode(values + mapOf("_rticket" to ticket.toString()))
             // Playback signs on hash branch 0 (upstream signPlayback: "Keep the
             // existing branch-0 signing algorithm"). The old != 1 check picked
             // branch 1 - a different hash family the playback endpoint rejects.
-            if (branch(query, body, ts) == 0) {
+            if (branch(query, body, ts) != 0) continue
                 val url = "$base?$query"
                 val random = (random()*65536).toInt()
-                // medusa must bind the SAME device id / version as the query string
-                // (upstream hgParamOf(query, "device_id"/"version_name")) or risk
-                // control answers 110001.
-                val headers = linkedMapOf(
-                    "User-Agent" to userAgent,
-                    "Accept" to "application/json; charset=utf-8,application/x-protobuf",
-                    "x-ss-req-ticket" to ticket.toString(),
-                    "sdk-version" to "2",
-                    "x-xs-from-web" to "0",
-                    "x-khronos" to ts.toString(),
-                    "x-ladon" to be32(ts).base64(),
-                    "x-argus" to le32(ts).base64(),
-                    "x-gorgon" to gorgon(query, body, ts, random),
-                    "x-helios" to helios(ts),
-                    "x-medusa" to medusa(url, body, ts,
-                        deviceId = values["device_id"] ?: "0",
-                        versionName = values["version_name"] ?: "7.1.3.32"))
+                val headers =
+                    if (mobileV5) linkedMapOf(
+                        "x-khronos" to ts.toString(),
+                        "x-helios" to helios(ts),
+                        "x-medusa" to medusaV5(
+                            url, body, ts, values + mapOf("_rticket" to ticket.toString())),
+                    ) else linkedMapOf(
+                        "User-Agent" to userAgent,
+                        "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+                        "x-ss-req-ticket" to ticket.toString(),
+                        "sdk-version" to "2",
+                        "x-xs-from-web" to "0",
+                        "x-khronos" to ts.toString(),
+                        "x-ladon" to be32(ts).base64(),
+                        "x-argus" to le32(ts).base64(),
+                        "x-gorgon" to gorgon(query, body, ts, random),
+                        "x-helios" to helios(ts),
+                        "x-medusa" to medusa(url, body, ts,
+                            deviceId = values["device_id"] ?: "0",
+                            versionName = values["version_name"] ?: "7.1.3.32"))
                 if (body != null) { headers["Content-Type"] = "application/json; charset=utf-8"; headers["x-ss-stub"] = digest("MD5", body).hex().uppercase() }
                 return Request(url, headers, body)
-            }
         }
         error("无法生成播放签名")
     }

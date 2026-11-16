@@ -57,20 +57,58 @@ internal fun openStream(
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     val ladder = repository.playbackTiers(id, maxQuality, type, metadataAhead, speculative)
-    val pool = ladder.filter(supportsTier).ifEmpty { ladder }
+    Log.i(
+        "HongguoTV",
+        "Playback ladder: " + ladder.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" },
+    )
+    val pool = ladder.filter(supportsTier)
+    Log.i(
+        "HongguoTV",
+        "Playback candidates: " + ladder.joinToString {
+            "${it.quality}/${it.codec}/${it.width}x${it.height}=${supportsTier(it)}"
+        },
+    )
+    // When every tier is blocked (a single-1080P episode whose HEVC decoder already
+    // failed, or an over-strict static probe), still try the best effort once: a
+    // hard refusal leaves no way to watch that episode at all. Multi-tier ladders
+    // keep their learned downgrade because `pool` is not empty for them.
+    val forcedAttempt = pool.isEmpty()
+    val attemptPool = pool.ifEmpty { ladder }
     val pick =
-        pool.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
-            ?: pool.filter { it.qualityValue <= 0 }.maxWithOrNull(betterTier)
-            ?: pool.minWithOrNull(betterTier)
+        attemptPool.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
+            ?: attemptPool.filter { it.qualityValue <= 0 }.maxWithOrNull(betterTier)
+            ?: attemptPool.minWithOrNull(betterTier)
             ?: return null
-    val alternates = pool.filter { it !== pick && it.qualityValue <= pick.qualityValue }
+    Log.i("HongguoTV", "Playback pick: ${pick.quality}/${pick.codec}/${pick.width}x${pick.height}")
+    val alternates = attemptPool.filter { it !== pick && it.qualityValue <= pick.qualityValue }
         .sortedWith(betterTier.reversed())
     for (tier in listOf(pick) + alternates) {
         val video = RemoteVideo(http, tier)
         try {
+            Log.i(
+                "HongguoTV",
+                "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}",
+            )
             video.prepare()
             val track = video.trackInfo()
-            if (supportsTrack(track)) return OpenedStream(video, tier, ladder, track)
+            Log.i(
+                "HongguoTV",
+                "Playback track: ${track?.fourcc}/${track?.width}x${track?.height} " +
+                    "supported=${supportsTrack(track)}",
+            )
+            // `supportsTier` and `supportsTrack` consult the same learned-failure
+            // store. When every tier is blocked, using that store again here would
+            // turn the best-effort fallback into another immediate refusal. Let the
+            // selected best tier reach ExoPlayer once; a real decoder failure will
+            // still surface through playerFailure instead of NoPlayableQuality.
+            if (forcedAttempt || supportsTrack(track)) {
+                Log.i(
+                    "HongguoTV",
+                    "Playback selected: ${tier.quality}/${tier.codec}/${track?.width}x${track?.height}" +
+                        if (forcedAttempt) " (forced best effort)" else "",
+                )
+                return OpenedStream(video, tier, ladder, track)
+            }
             Log.i(
                 "HongguoTV",
                 "Skipped ${tier.quality} ${tier.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
