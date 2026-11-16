@@ -551,7 +551,7 @@ class MainActivity: Activity() {
         // Focus arrived on another nav button (D-pad left/right): the page switches under
         // it, focus stays on that nav button. focusNav keeps the grid from stealing focus.
         if(navSwitchFocus) { navSwitchFocus=false; showCatalog(load=(next!=4 && catalog.isEmpty() && !localCatalog()),focusNav=true) }
-        else showCatalog(load=(next!=4 && next<=3 && catalog.isEmpty()))
+        else showCatalog(load=(next!=4 && next!=9 && !localCatalog() && catalog.isEmpty()))
     }
     private fun leaveCollection() {
         if(collection==null) return
@@ -915,6 +915,10 @@ class MainActivity: Activity() {
         } else catalogGrid(body,focusNav,focusType)
     }
     private fun catalogGrid(body: LinearLayout,focusNav: Boolean,focusType: Boolean=false,loading: Boolean=false) {
+        // Non-home tabs (ranking, short/comic/AI) render their loading state inside the
+        // rebuilt body, so any full-screen overlay from the previous pass must be dropped
+        // here. renderHome re-shows it below when it is still waiting for first data.
+        hideLoading()
         if(tab==0 && page==1 && collection==null) { renderHome(body,focusNav,focusType,loading); return }
         catalogCards.clear(); cardImages.clear(); collectionBack=null
         if(collection!=null) {
@@ -1686,14 +1690,13 @@ class MainActivity: Activity() {
         tvResultTitle?.text="搜索结果 · $tvResultQuery（${catalog.size}）"
         list.removeAllViews()
         val items=mutableListOf<View>()
-        val count=6; val gap=dp(10)
-        // Card width must match the result panel's REAL width: screen minus page padding (2*5%),
-        // the left column and its trailing gap. Keep the same six-column poster grid as the
-        // main catalog instead of four oversized cards. Measure the panel itself because
-        // using screen*70% overflows and clips the rightmost column.
+        val count=7; val gap=dp(14)
+        // The history columns are hidden in result mode, so the panel spans the full body
+        // width. Use the same seven-column geometry as the main catalog; four columns here
+        // made every poster roughly twice as wide as the cards on the other screens.
         val panel=tvResultPanel
         val panelWidth=panel?.width?.takeIf { it>0 }?.minus(panel.paddingLeft+panel.paddingRight)
-            ?: ((resources.displayMetrics.widthPixels*.60f)-dp(30)).toInt()
+            ?: ((resources.displayMetrics.widthPixels*.92f)-dp(30)).toInt()
         val width=((panelWidth-gap*(count-1))/count).coerceAtLeast(dp(104))
         catalog.take(40).chunked(count).forEach { rowItems ->
             val line=row(); line.gravity=Gravity.TOP
@@ -1703,10 +1706,10 @@ class MainActivity: Activity() {
                 card.addView(artwork,lp(-1,((width-dp(6))/TvStyle.POSTER_ASPECT).toInt()))
                 val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
                 artwork.addView(image,FrameLayout.LayoutParams(-1,-1)); loadCover(image,series.cover)
-                card.addView(text(series.title,13.5f).apply { typeface=TvStyle.typeface(true); gravity=Gravity.CENTER; maxLines=2; minLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(2),dp(5),dp(2),0) })
+                card.addView(text(series.title,14f).apply { typeface=TvStyle.typeface(true); gravity=Gravity.CENTER; maxLines=2; minLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(6),dp(3),0) })
                 val badge=series.badge.trim()
-                card.addView(text(badge,11f,muted).apply {
-                    gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(2),dp(1),dp(2),0)
+                card.addView(text(badge,11.5f,muted).apply {
+                    gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(1),dp(3),0)
                     visibility=if(badge.isBlank()) View.GONE else View.VISIBLE
                 })
                 card.setOnClickListener { openDetail(series) }
@@ -1738,17 +1741,24 @@ class MainActivity: Activity() {
         val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
         tvResultQuery=clean; library.rememberSearch(clean,library.contentType); query=clean; page=1
         tvResultTitle?.text="搜索结果 · $clean"
-        // Park focus BEFORE clearing the list: on repeat searches focus sits on a result
-        // card, and removing that card lets Android hand focus to the top nav (首页),
-        // whose focus-to-switch listener leaves the search tab. The result title is
-        // always attached, so it is the safe parking spot; rebuildingGrid suppresses
-        // the nav listener while the layout swaps.
+        // Park focus on the always-visible search button BEFORE clearing the list: on
+        // repeat searches focus sits on a result card, and removing that card lets
+        // Android hand focus to the top nav (首页), whose focus-to-switch listener
+        // leaves the search tab. The result title is still GONE at this point, so it
+        // cannot take focus until applyTvLayoutMode() has shown the result panel.
         rebuildingGrid=true
         try {
-            tvResultTitle?.requestFocus()
+            tvSearchButton?.requestFocus()
             tvResultList?.removeAllViews()
             applyTvLayoutMode()
-            showLoading()
+            tvResultPanel?.requestLayout()
+            tvResultTitle?.requestFocus()
+            // Keep the search panel usable while waiting. A full-screen overlay would
+            // take focus; removing it when the reply lands hands focus back to the top
+            // nav, and the nav's focus listener immediately switches to 首页.
+            tvResultList?.addView(text("正在搜索…",14f,muted).apply {
+                setPadding(dp(4),dp(12),0,dp(12))
+            })
         } finally { rebuildingGrid=false }
         // The panel just switched from GONE to VISIBLE, so its width is not measured yet.
         // Re-layout now so renderTvResults() can read the real panel width for card sizing.
