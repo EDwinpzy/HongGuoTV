@@ -123,7 +123,8 @@ class MainActivity: Activity() {
     private var gridFlatIndex=mutableMapOf<View,Int>()
     private var gridCount=6
     private var gridWidth=0
-    private var gridLoadingRow: TextView?=null
+    private var gridLoadingRow: View?=null
+    private var loadingOverlay: FrameLayout?=null
     private var homeScreen: HomeScreen?=null
     private var selectionPreview: SeriesPreview?=null
     private var homeFromCache=false
@@ -245,6 +246,7 @@ class MainActivity: Activity() {
     private var player: ExoPlayer?=null
     private var video: RemoteVideo?=null
     private var playbackReady=false
+    private var playbackSpinner: ProgressBar?=null
     private var pausedForLifecycle=false
     private lateinit var hud: LinearLayout
     private lateinit var playbackText: TextView
@@ -364,6 +366,7 @@ class MainActivity: Activity() {
     }
     private fun base(title: String?=null): LinearLayout {
         root.removeAllViews(); root.background=TvStyle.backdrop()
+        loadingOverlay=null
         val container=column(); val horizontal=dp(widthDp()*.035f); val vertical=(resources.displayMetrics.heightPixels*.022f).toInt()
         container.setPadding(horizontal,vertical,horizontal,vertical); root.addView(container,FrameLayout.LayoutParams(-1,-1))
         if(title!=null) {
@@ -435,20 +438,39 @@ class MainActivity: Activity() {
             }
         }
     }
+    private fun showLoading() {
+        if(isFinishing || isDestroyed) return
+        loadingOverlay?.let { root.removeView(it) }
+        val overlay=FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK); isClickable=true; isFocusable=true
+            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleLarge).apply {
+                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
+            },FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
+        }
+        root.addView(overlay,FrameLayout.LayoutParams(-1,-1))
+        loadingOverlay=overlay; overlay.requestFocus()
+    }
+    private fun hideLoading() {
+        loadingOverlay?.let { root.removeView(it) }
+        loadingOverlay=null
+    }
+    private fun inlineLoading(): View = FrameLayout(this).apply {
+        addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleSmall).apply {
+            indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
+        },FrameLayout.LayoutParams(dp(24),dp(24),Gravity.CENTER))
+    }
     private fun message(parent: LinearLayout,label: String) {
+        if(label.contains("正在") || label.contains("加载")) { showLoading(); return }
         val panel=column().apply {
             setPadding(dp(24),dp(18),dp(24),dp(18)); background=TvStyle.panel(this@MainActivity,22)
             gravity=Gravity.CENTER_HORIZONTAL
         }
         panel.addView(text(label,16f,muted).apply { gravity=Gravity.CENTER; setLineSpacing(0f,1.2f) },lp(-1,-2))
-        if(label.contains("正在") || label.contains("加载")) {
-            panel.addView(ProgressBar(this,null,android.R.attr.progressBarStyle).apply {
-                indeterminateTintList=android.content.res.ColorStateList.valueOf(TvStyle.accent)
-            },lp(dp(22),dp(22)).apply { topMargin=dp(12); gravity=Gravity.CENTER_HORIZONTAL })
-        }
         parent.addView(panel,lp(-1,-2).apply { topMargin=dp(14); bottomMargin=dp(10) })
     }
     private fun error(parent: LinearLayout,problem: Throwable,retry: ()->Unit) {
+        hideLoading()
         val panel=column().apply {
             setPadding(dp(24),dp(20),dp(24),dp(18)); background=TvStyle.panel(this@MainActivity,22)
         }
@@ -945,7 +967,7 @@ class MainActivity: Activity() {
             if(hasMore) {
                 // Loading indicator at the bottom of an infinite grid; removed once the next
                 // page arrives (the grid appends the new rows in place).
-                gridLoadingRow=text("正在加载更多…",15f,muted).apply { setPadding(0,dp(20),0,dp(12)) }
+                gridLoadingRow=inlineLoading()
                 list.addView(gridLoadingRow)
             }
         } else {
@@ -1176,7 +1198,7 @@ class MainActivity: Activity() {
         // the last row keeps focus on DOWN (no paging row exists below an infinite grid).
         patchCardNavigation(cards,count)
         if(hasMore) {
-            gridLoadingRow=text("正在加载更多…",15f,muted).apply { setPadding(0,dp(20),0,dp(12)) }
+            gridLoadingRow=inlineLoading()
             list.addView(gridLoadingRow)
         }
         // New rows need the same poster-height pass the first rows got (the scroll view
@@ -1192,6 +1214,9 @@ class MainActivity: Activity() {
         }
     }
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
+        if(loading && homeShort.isEmpty() && homeComic.isEmpty() && homeAi.isEmpty()) {
+            showLoading(); return
+        }
         homeUpdateCount=library.updatedFavorites()
         selectionPreview=null
         val top=nav[0]
@@ -1634,6 +1659,7 @@ class MainActivity: Activity() {
     }
 
     private fun renderTvResults() {
+        hideLoading()
         val list=tvResultList ?: return
         if(tvResultQuery.isBlank()) { applyTvLayoutMode(); return }
         applyTvLayoutMode()
@@ -1642,6 +1668,7 @@ class MainActivity: Activity() {
             list.removeAllViews()
             list.addView(text("没有找到相关剧集，换个关键词试试",14f,muted).apply { setPadding(0,dp(14),0,dp(14)) })
             applyTvLayoutMode()
+            tvResultTitle?.requestFocus()
             return
         }
         tvResultTitle?.text="搜索结果 · $tvResultQuery（${catalog.size}）"
@@ -1707,8 +1734,8 @@ class MainActivity: Activity() {
         try {
             tvResultTitle?.requestFocus()
             tvResultList?.removeAllViews()
-            tvResultList?.addView(text("正在搜索…",14f,muted).apply { setPadding(0,dp(10),0,dp(10)) })
             applyTvLayoutMode()
+            showLoading()
         } finally { rebuildingGrid=false }
         // The panel just switched from GONE to VISIBLE, so its width is not measured yet.
         // Re-layout now so renderTvResults() can read the real panel width for card sizing.
@@ -1718,6 +1745,7 @@ class MainActivity: Activity() {
             if(result.warning.isNotBlank()) Toast.makeText(this,result.warning,Toast.LENGTH_LONG).show()
             renderTvResults()
         }, { problem ->
+            hideLoading()
             tvResultList?.removeAllViews()
             tvResultList?.addView(text(if(problem is java.net.UnknownHostException) "无法连接内容网站" else if(problem is java.net.SocketTimeoutException) "连接超时，请重试" else "搜索失败，请重试",14f,muted).apply { setPadding(0,dp(10),0,dp(10)) })
             val retry=compactButton("重试") { tvSubmitText(clean) }
@@ -2019,6 +2047,11 @@ class MainActivity: Activity() {
                 danmakuOverlay=DanmakuOverlay(this).apply { restyle(currentDanmakuParams()) }
                 root.addView(danmakuOverlay,FrameLayout.LayoutParams(-1,-1))
             }
+            playbackSpinner=ProgressBar(this,null,android.R.attr.progressBarStyleLarge).apply {
+                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
+                importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            root.addView(playbackSpinner,FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
             hud=column().apply {
                 setPadding(dp(widthDp()*.035f),dp(14),dp(widthDp()*.035f),dp(16)); background=TvStyle.playerShade()
                 visibility=View.GONE
@@ -2095,6 +2128,7 @@ class MainActivity: Activity() {
                             return
                         }
                         playbackReady=true
+                        playbackSpinner?.visibility=View.GONE
                         if(p.duration>0) danmakuDuration=p.duration
                         if(firstReady) { firstReady=false; readySince=android.os.SystemClock.elapsedRealtime(); android.util.Log.i("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}") }
                         if(hud.visibility==View.VISIBLE) updatePlaybackText()
@@ -2114,6 +2148,7 @@ class MainActivity: Activity() {
                 override fun onRenderedFirstFrame() {
                     if(active() && firstFrame) {
                         firstFrame=false
+                        playbackSpinner?.visibility=View.GONE
                         android.util.Log.i("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
                     }
                 }
@@ -2269,7 +2304,7 @@ class MainActivity: Activity() {
                 return
             }
         }
-        playError=true; player?.pause(); progressBar.visibility=View.GONE; hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
+        playError=true; player?.pause(); progressBar.visibility=View.GONE; playbackSpinner?.visibility=View.GONE; hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
         val retryable=if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT else problem is java.io.IOException
         playbackText.text=if(decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "播放失败，可重试或切换清晰度。"
@@ -2647,7 +2682,7 @@ class MainActivity: Activity() {
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
-        video?.close(); video=null; playerView?.player=null; playerView=null; stopDanmakuFetch(); danmakuOverlay?.shutdown(); danmakuOverlay=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
+        video?.close(); video=null; playerView?.player=null; playerView=null; stopDanmakuFetch(); danmakuOverlay?.shutdown(); danmakuOverlay=null; player?.release(); player=null; playbackReady=false; playbackSpinner=null; transportPlay=null; sleepButton=null
         closeTransport(playbackHttp); playbackHttp=null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }

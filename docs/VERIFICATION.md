@@ -20,11 +20,13 @@
 | 紧凑内容网格（Debug） | PASS | 首页货架与短剧/漫剧/AI/榜单为 7 列，搜索结果为 4 列；卡片、间距和页面边距均收紧 |
 | 矩形海报比例（Debug） | PASS | 首页、短剧、榜单、搜索结果、详情季卡与相关剧集统一为固定 2:3 竖向矩形，不再按剩余高度压缩成近方形 |
 | 首页信息精简（Debug） | PASS | 移除“发现”、副标题、焦点标题预览和操作提示；货架仅保留“接着看 / 短剧 / 漫剧 / AI剧” |
+| 简约加载界面（Debug） | PASS | 首次启动、频道、详情和搜索等待统一为全黑底 + 居中白色圆圈，不显示加载文字；分页加载改为列表底部圆圈 |
 | 卡片焦点移动 | PASS | 左右移动会切换白色焦点描边与卡片标题，不再显示额外焦点标题预览 |
 | 详情与播放 | PASS | OK 进入详情，再按 OK 启动 1080P 播放 |
 | 播放画面（S621 Overlay 兼容） | PASS | 修复前仅声音无画面时，日志持续出现 `HWComposerMMVideo::present: hwc overlay number exceed limit`；播放器改为 `TextureView` 后，Release 包首次播放、从 `douyinTV` 切回、左右快进和下键切集均持续正常出画，日志无 Overlay 超限或播放失败 |
 | 播放合成性能 | PASS | Release 包 1080P 播放 30 秒，`gfxinfo` 共 865 帧，Janky 45 帧（5.2%），90 分位 13 ms |
 | 播放器默认界面（Debug） | PASS | 进入播放器默认只显示视频和弹幕，不显示进度条、标题、集数或操作提示 |
+| 播放器加载态（Debug） | PASS | 播放器首帧准备期间显示全黑底 + 居中白色圆圈，首帧或播放器就绪后自动隐藏 |
 | 播放器菜单（Debug） | PASS | 按 `MENU` 呼出单一合并面板，包含标题、集数、进度、暂停、上一集、下一集、选集和播放设置；再按 `MENU` 隐藏 |
 | 播放控件 | PASS | 默认界面 OK 暂停/继续；ExoPlayer 获取音频焦点，播放进度正常 |
 | 预加载与上下集切换（Debug） | PASS | 当前集播放稳定后预取后 3 集；按 DOWN 切集日志为 `Playback first frame episode=3 preloaded=true reused=true elapsedMs=1354` |
