@@ -19,6 +19,8 @@
 | TV 界面重设计 | PASS | 首页 10 个导航项完整单行显示；圆角封面、卡片层级、橙色焦点描边、详情 Hero、设置面板和播放器 HUD 均正常 |
 | 卡片焦点移动 | PASS | 左右移动会切换焦点并更新预览标题 |
 | 详情与播放 | PASS | OK 进入详情，再按 OK 启动 1080P 播放 |
+| 播放画面（S621 Overlay 兼容） | PASS | 修复前仅声音无画面时，日志持续出现 `HWComposerMMVideo::present: hwc overlay number exceed limit`；播放器改为 `TextureView` 后，Release 包首次播放、从 `douyinTV` 切回、左右快进和下键切集均持续正常出画，日志无 Overlay 超限或播放失败 |
+| 播放合成性能 | PASS | Release 包 1080P 播放 30 秒，`gfxinfo` 共 865 帧，Janky 45 帧（5.2%），90 分位 13 ms |
 | 播放控件 | PASS | OK 暂停并显示控件；ExoPlayer 获取音频焦点，播放进度正常 |
 | 播放中上下键切集 | PASS | Release 包中先按 UP 从第 10 集回到第 9 集，再按 DOWN 回到第 10 集；日志分别输出 `Playback ready episode=9` 和 `episode=10` |
 | 长按确认打开更多面板 | PASS | 持续按住确认键 1 秒后打开“暂停/上一集/下一集/选集/播放设置”面板；MediaSession 仍为播放状态，未误触发暂停 |
@@ -49,6 +51,7 @@
 | 物理遥控器按键 | NOT_RUN | 本次使用 ADB 注入按键；S621 是实体设备，但没有人工按物理遥控器 |
 | 二维码取消与过期 | NOT_RUN | 最终 Release 验证时账号已登录；为避免清除已确认的登录态，未在最终包上重复执行退出后取消/等待过期 |
 | 长时间连续播放 | NOT_RUN | 未做数小时播放、内存和解码稳定性测试 |
+| 多应用同时硬解 | NOT_RUN | 已验证从 `douyinTV` 切回红果后正常出画，但未验证两个应用同时在前台硬解播放器 |
 | 其他 TV 型号 | NOT_RUN | 仅验证 S621；其他厂商的 D-pad、解码器和音频输出可能不同 |
 | 手机扫码输入 / 备份 | NOT_RUN | 未在本轮做手机端联调 |
 | 应用内更新 | N/A | 本分支已禁用上游自动更新，改由 GitHub Release 手动发布 |
