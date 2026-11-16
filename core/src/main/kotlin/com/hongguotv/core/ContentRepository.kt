@@ -323,33 +323,13 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
 
     /** The four website boards: 总热播榜 / 真人剧榜 / 漫剧榜 / AI剧榜.
-     *  Each board holds 100 entries (5 pages x 20); the whole board is fetched at once —
-     *  the TV grid renders all cards immediately and the infinite scroll simply has
-     *  nothing more to append. */
+     *  Each board holds 100 entries (5 pages x 20). Return the requested page only so
+     *  the TV grid can show its first 20 cards after one request; the infinite scroll
+     *  appends the remaining pages on demand instead of blocking on five sequential
+     *  ~210KB page loads. */
     fun ranking(board: RankBoard, page: Int = 1): CatalogPage {
         require(page in 1..100)
-        val first=ComicRank.parse(webText("$site/rank/${board.path}?page=$page"),page,board)
-        val totalPages=first.ranking?.totalPages ?: 1
-        if(totalPages<=page) return first
-        // Fetch the remaining pages and merge items + positions into one full board.
-        val items=first.items.toMutableList()
-        val positions=first.ranking!!.positions.toMutableMap()
-        for(next in page+1..minOf(totalPages,100)) {
-            runCatching { ComicRank.parse(webText("$site/rank/${board.path}?page=$next"),next,board) }
-                .onSuccess { part ->
-                    val known=items.map { it.id }.toHashSet()
-                    items+=part.items.filterNot { it.id in known }
-                    // Map-plus would overwrite a rank/heat captured on an earlier page
-                    // with a blank one from a later page (the site only stamps rank on
-                    // the first page a series appears on); keep the richer existing entry.
-                    part.ranking?.positions?.forEach { (id,position) ->
-                        val existing=positions[id]
-                        if(existing==null || (existing.rank==null && existing.heat.isBlank()))
-                            positions[id]=position
-                    }
-                }
-        }
-        return CatalogPage(items,false,ComicRanking(positions,totalPages,first.ranking!!.updatedText))
+        return ComicRank.parse(webText("$site/rank/${board.path}?page=$page"),page,board)
     }
 
     // ---------- search (website XHR) ----------
