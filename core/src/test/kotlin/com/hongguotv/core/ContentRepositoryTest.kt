@@ -547,8 +547,8 @@ class ContentRepositoryTest {
         assertEquals(RankPosition(23,"5746万热度"),result.ranking!!.positions["123"])
         assertEquals(5,result.ranking.totalPages)
         assertEquals("9月22日已更新",result.ranking.updatedText)
-        // The whole board is merged at once: no further pages to append.
-        assertFalse(result.hasMore)
+        // Only the requested page is fetched; the TV grid appends the rest on scroll.
+        assertTrue(result.hasMore)
         assertFalse(result.items.single().toJson().has("rank"))
     }
 
@@ -571,6 +571,7 @@ class ContentRepositoryTest {
         assertEquals(RankPosition(21,"5746万热度"),result.ranking!!.positions["123"])
         assertEquals(5,result.ranking.totalPages)
         assertEquals("今日已更新",result.ranking.updatedText)
+        assertTrue(result.hasMore)
     }
 
     @Test fun rankingRejectsUnexpectedPageInsteadOfShowingWrongRanks() {
@@ -636,9 +637,8 @@ class ContentRepositoryTest {
         val page=repo.comicRanking(2)
         assertEquals("测试 & 漫剧",page.items.single().title)
         assertEquals("https://example.com/a.jpg",page.items.single().cover)
-        // Full-board fetch: the follow-up page (3) fails its pagination anchor in the
-        // mock (same HTML), is swallowed by runCatching, and the board is complete.
-        assertFalse(page.hasMore)
+        // Only page 2 was requested; page 3 is loaded later by the infinite grid.
+        assertTrue(page.hasMore)
     }
 
     // ---------- four-board ranking (总热播榜 / 真人剧榜 / 漫剧榜 / AI剧榜) ----------
@@ -673,8 +673,7 @@ class ContentRepositoryTest {
         assertEquals("测试漫剧",result.items.single().title)
         assertEquals(5,result.ranking!!.totalPages)
         assertEquals("10月13日已更新",result.ranking.updatedText)
-        // Whole board fetched at once: nothing more to append.
-        assertFalse(result.hasMore)
+        assertTrue(result.hasMore)
     }
 
     @Test fun realBoardRejectsComicRouteData() {
@@ -693,8 +692,7 @@ class ContentRepositoryTest {
         assertEquals("AI剧",result.items.single().title)
         assertEquals(RankPosition(1,"800万热度"),result.ranking!!.positions["123"])
         assertEquals(2,result.ranking.totalPages)
-        // Whole board fetched at once: nothing more to append.
-        assertFalse(result.hasMore)
+        assertTrue(result.hasMore)
     }
 
     @Test fun rankBoardRoundTripsStoredValues() {

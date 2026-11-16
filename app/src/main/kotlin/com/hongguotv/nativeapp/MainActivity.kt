@@ -1144,6 +1144,18 @@ class MainActivity: Activity() {
             // Board/theme switched while the request was in flight: drop the stale result.
             if(requestTab==5 && requestBoard!=library.rankBoard) return@work
             if((requestTab==1 || requestTab==2 || requestTab==3) && requestTheme!=themeSlug) return@work
+            // Ranking pages carry only their own heat/rank rows. Merge them before
+            // appending so the newly built cards get the same badges as page 1.
+            if(requestTab==5) {
+                val incoming=result.ranking
+                if(incoming!=null) {
+                    val existing=ranking
+                    ranking=if(existing==null) incoming else ComicRanking(
+                        existing.positions+incoming.positions,
+                        maxOf(existing.totalPages,incoming.totalPages),
+                        existing.updatedText.ifBlank { incoming.updatedText })
+                }
+            }
             // Deduplicate against what is already on screen, then append.
             val known=catalog.map { it.id }.toHashSet()
             val fresh=result.items.filterNot { it.id in known }
@@ -1674,14 +1686,15 @@ class MainActivity: Activity() {
         tvResultTitle?.text="搜索结果 · $tvResultQuery（${catalog.size}）"
         list.removeAllViews()
         val items=mutableListOf<View>()
-        val count=4; val gap=dp(12)
+        val count=6; val gap=dp(10)
         // Card width must match the result panel's REAL width: screen minus page padding (2*5%),
-        // the left column (30%) and its trailing gap. Using screen*70% overflowed the panel and
-        // clipped the 4th card, so measure the panel itself instead.
+        // the left column and its trailing gap. Keep the same six-column poster grid as the
+        // main catalog instead of four oversized cards. Measure the panel itself because
+        // using screen*70% overflows and clips the rightmost column.
         val panel=tvResultPanel
         val panelWidth=panel?.width?.takeIf { it>0 }?.minus(panel.paddingLeft+panel.paddingRight)
             ?: ((resources.displayMetrics.widthPixels*.60f)-dp(30)).toInt()
-        val width=((panelWidth-gap*(count-1))/count).coerceAtLeast(dp(120))
+        val width=((panelWidth-gap*(count-1))/count).coerceAtLeast(dp(104))
         catalog.take(40).chunked(count).forEach { rowItems ->
             val line=row(); line.gravity=Gravity.TOP
             rowItems.forEachIndexed { columnIndex,series ->

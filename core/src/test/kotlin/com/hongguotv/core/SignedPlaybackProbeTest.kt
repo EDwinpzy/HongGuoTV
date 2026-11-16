@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit
  */
 class SignedPlaybackProbeTest {
     @org.junit.Test
+    @org.junit.Ignore("hits the live API - run manually only")
     fun probe() {
         val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
         val transport = AppApiTransport(http)
