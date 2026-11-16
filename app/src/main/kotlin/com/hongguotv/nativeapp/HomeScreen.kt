@@ -6,6 +6,7 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import com.hongguotv.core.Series
 
@@ -87,9 +88,10 @@ class HomeScreen(
     private var lastRow: String?=null
     private var restoring=false
     private var revision=0
-    val refresh=label("正在更新热门…",14f).apply {
+    val refresh=label("正在更新热门…",13f).apply {
         id=View.generateViewId(); tag="home:refresh"; isFocusable=true; isFocusableInTouchMode=true
-        gravity=Gravity.CENTER_VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(12))
+        gravity=Gravity.CENTER; minHeight=dp(TvStyle.CONTROL_COMPACT)
+        setPadding(dp(12),dp(5),dp(12),dp(5))
         TvStyle.paintChip(this,false)
         setOnFocusChangeListener { view,f ->
             TvStyle.paintChip(view as TextView,f)
@@ -116,6 +118,7 @@ class HomeScreen(
         val card=cards["$shelfKey:${entry.series.id}"] ?: return false
         if(card.entry?.series?.cover!=entry.series.cover) { card.image?.setImageDrawable(null) }
         card.entry=entry; card.title.text=entry.series.title; card.label.text=entry.label
+        card.label.visibility=if(entry.label.isBlank()) View.GONE else View.VISIBLE
         card.progress?.apply { progress=entry.progress ?: 0; visibility=if(entry.progress==null) INVISIBLE else VISIBLE }
         card.view.contentDescription="${shelves.firstOrNull { it.key==shelfKey }?.title.orEmpty()}，${entry.series.title}，${entry.label}"
         shelves=shelves.map { shelf -> if(shelf.key==shelfKey) shelf.copy(entries=shelf.entries.map { if(it.series.id==entry.series.id) entry else it }) else shelf }
@@ -144,10 +147,9 @@ class HomeScreen(
         contents.removeAllViews(); rows.clear(); cards.clear(); moreButton=null; lastRow=null
         shelves.filter { it.entries.isNotEmpty() || it.more!=null }.forEach { shelf ->
             val block=LinearLayout(context).apply { orientation=VERTICAL }
-            val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(2),dp(4),dp(2),dp(7)) }
-            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=3) },LayoutParams(dp(4),dp(15)).apply { rightMargin=dp(9) })
-            heading.addView(label(shelf.title,20f).apply { typeface=TvStyle.titleTypeface() },LayoutParams(0,-2,1f))
-            heading.addView(label("左右选择  ·  上下浏览",10.5f,TvStyle.muted))
+            val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(2),dp(3),dp(2),dp(6)) }
+            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=3) },LayoutParams(dp(3),dp(14)).apply { rightMargin=dp(8) })
+            heading.addView(label(shelf.title,18f).apply { typeface=TvStyle.titleTypeface() },LayoutParams(0,-2,1f))
             block.addView(heading)
             val horizontal=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false; setPadding(dp(2),dp(2),dp(2),dp(2)) }
             val line=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.TOP }
@@ -156,14 +158,18 @@ class HomeScreen(
             fun addCard(entry: Entry?,moreAction: (() -> Unit)?=null) {
                 val width=((resources.displayMetrics.widthPixels*.92f-dp(84))/7).toInt().coerceAtLeast(dp(96))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
-                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(3),dp(3),dp(3),dp(7)); background=shape(false) }
+                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(2),dp(2),dp(2),dp(6)); background=shape(false) }
                 val art=FrameLayout(context).apply { TvStyle.roundedContainer(this,14) }
                 val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
                 if(image!=null) art.addView(image,FrameLayout.LayoutParams(-1,-1))
                 else art.addView(label("›",36f).apply { gravity=Gravity.CENTER },FrameLayout.LayoutParams(-1,-1))
                 view.addView(art,LayoutParams(-1,((width-dp(6))/TvStyle.POSTER_ASPECT).toInt()))
-                val title=label(entry?.series?.title ?: "查看全部",14f).apply { typeface=TvStyle.typeface(true); minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(6),dp(3),0) }
-                val badge=label(entry?.label ?: shelf.title,11.5f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(1),0,0) }
+                val title=label(entry?.series?.title ?: "查看全部",13.5f).apply { typeface=TvStyle.typeface(true); minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(2),dp(5),dp(2),0) }
+                val badgeText=if(entry==null) shelf.title else entry.label
+                val badge=label(badgeText,11f,TvStyle.muted).apply {
+                    minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(2),dp(1),dp(2),0)
+                    visibility=if(badgeText.isBlank()) View.GONE else View.VISIBLE
+                }
                 val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
                     max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) INVISIBLE else VISIBLE
                     progressDrawable=context.getDrawable(R.drawable.tv_progress)
@@ -207,27 +213,36 @@ class HomeScreen(
                         post { if(!cards.values.any { it.view.hasFocus() }) deselected?.invoke() }
                     }
                 }
-                line.addView(view,LayoutParams(width,-1).apply { rightMargin=dp(12) }); rowCards+=card; cards[key]=card
+                line.addView(view,LayoutParams(width,-1).apply { rightMargin=dp(10) }); rowCards+=card; cards[key]=card
             }
             shelf.entries.forEach { addCard(it) }
             shelf.more?.let { action -> addCard(null,action) }
-            contents.addView(block,LayoutParams(-1,-2).apply { bottomMargin=dp(14) }); rows+=Row(shelf.key,block,horizontal,rowCards)
+            contents.addView(block,LayoutParams(-1,-2).apply { bottomMargin=dp(10) }); rows+=Row(shelf.key,block,horizontal,rowCards)
         }
         if(cards.isEmpty()) contents.addView(label("还没有本机记录，热门剧加载后可选择观看。",15f).apply { setPadding(0,dp(16),0,dp(16)) })
-        contents.addView(refresh,LayoutParams(-1,-2).apply { topMargin=dp(8) })
+        val footerBar=LinearLayout(context).apply {
+            orientation=HORIZONTAL; gravity=Gravity.CENTER; setPadding(0,dp(8),0,dp(4))
+        }
+        // refresh is a persistent control, so detach it from the previous footer before
+        // recycling it into the newly rendered footer. Removing the old footer from the
+        // scroll only detaches the container, not this child.
+        (refresh.parent as? ViewGroup)?.removeView(refresh)
+        footerBar.addView(refresh,LayoutParams(LayoutParams.WRAP_CONTENT,dp(TvStyle.CONTROL_COMPACT)).apply { rightMargin=dp(8) })
         val footer=mutableListOf<View>(refresh)
         if(more!=null) {
-            val next=label("更多热门  ›",15f).apply {
+            val next=label("更多热门  ›",13f).apply {
                 id=View.generateViewId(); tag="home:more"; isFocusable=true; isFocusableInTouchMode=true
-                setPadding(dp(16),dp(12),dp(16),dp(12)); TvStyle.paintChip(this,false)
+                gravity=Gravity.CENTER; minHeight=dp(TvStyle.CONTROL_COMPACT)
+                setPadding(dp(12),dp(5),dp(12),dp(5)); TvStyle.paintChip(this,false)
                 setOnFocusChangeListener { view,f ->
                     TvStyle.paintChip(view as TextView,f)
                     if(f) { lastFocus=tag.toString(); deselected?.invoke() }
                 }
                 setOnClickListener { more() }
             }
-            contents.addView(next,LayoutParams(-1,-2).apply { topMargin=dp(8) }); footer+=next; moreButton=next
+            footerBar.addView(next,LayoutParams(LayoutParams.WRAP_CONTENT,dp(TvStyle.CONTROL_COMPACT))); footer+=next; moreButton=next
         }
+        contents.addView(footerBar,LayoutParams(-1,-2))
         rows.forEachIndexed { i,row -> row.cards.forEachIndexed { j,card ->
             // Wrap-around within the shelf row: pressing right past the last card jumps
             // to the first (and vice versa). The explicit ID chain keeps geometric
@@ -256,7 +271,12 @@ class HomeScreen(
                 }
             }
         } }
-        footer.forEachIndexed { i,v -> v.nextFocusUpId=if(i==0) rows.lastOrNull()?.cards?.firstOrNull()?.view?.id ?: top.id else footer[i-1].id; v.nextFocusDownId=footer.getOrNull(i+1)?.id ?: v.id }
+        footer.forEachIndexed { i,v ->
+            v.nextFocusUpId=if(i==0) rows.lastOrNull()?.cards?.firstOrNull()?.view?.id ?: top.id else footer[i-1].id
+            v.nextFocusDownId=footer.getOrNull(i+1)?.id ?: v.id
+            v.nextFocusLeftId=footer[(i-1+footer.size)%footer.size].id
+            v.nextFocusRightId=footer[(i+1)%footer.size].id
+        }
         top.nextFocusDownId=firstId()
         val preferred=focus.ifBlank { previous?.focus.orEmpty() }
         val target=target(preferred,previous)

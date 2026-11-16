@@ -9,7 +9,7 @@
 | 应用版本 | 1.0.0（versionCode 10000） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
-| 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
+| 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
 
 ## 已验证
 
@@ -19,18 +19,22 @@
 | iOS 风格界面重设计（Debug） | PASS | 黑底蓝/粉静态光晕、浮层玻璃导航、白色焦点胶囊、紧凑标题层级和详情 Hero 均正常；账号入口仍在 |
 | 紧凑内容网格（Debug） | PASS | 首页货架与短剧/漫剧/AI/榜单为 7 列，搜索结果为 4 列；卡片、间距和页面边距均收紧 |
 | 矩形海报比例（Debug） | PASS | 首页、短剧、榜单、搜索结果、详情季卡与相关剧集统一为固定 2:3 竖向矩形，不再按剩余高度压缩成近方形 |
-| 卡片焦点移动 | PASS | 左右移动会切换焦点并更新预览标题 |
+| 首页信息精简（Debug） | PASS | 移除“发现”、副标题、焦点标题预览和操作提示；货架仅保留“接着看 / 短剧 / 漫剧 / AI剧” |
+| 卡片焦点移动 | PASS | 左右移动会切换白色焦点描边与卡片标题，不再显示额外焦点标题预览 |
 | 详情与播放 | PASS | OK 进入详情，再按 OK 启动 1080P 播放 |
 | 播放画面（S621 Overlay 兼容） | PASS | 修复前仅声音无画面时，日志持续出现 `HWComposerMMVideo::present: hwc overlay number exceed limit`；播放器改为 `TextureView` 后，Release 包首次播放、从 `douyinTV` 切回、左右快进和下键切集均持续正常出画，日志无 Overlay 超限或播放失败 |
 | 播放合成性能 | PASS | Release 包 1080P 播放 30 秒，`gfxinfo` 共 865 帧，Janky 45 帧（5.2%），90 分位 13 ms |
-| 播放控件 | PASS | OK 暂停并显示控件；ExoPlayer 获取音频焦点，播放进度正常 |
-| 播放中上下键切集 | PASS | Release 包中先按 UP 从第 10 集回到第 9 集，再按 DOWN 回到第 10 集；日志分别输出 `Playback ready episode=9` 和 `episode=10` |
-| 长按确认打开更多面板 | PASS | 持续按住确认键 1 秒后打开“暂停/上一集/下一集/选集/播放设置”面板；MediaSession 仍为播放状态，未误触发暂停 |
+| 播放器默认界面（Debug） | PASS | 进入播放器默认只显示视频和弹幕，不显示进度条、标题、集数或操作提示 |
+| 播放器菜单（Debug） | PASS | 按 `MENU` 呼出单一合并面板，包含标题、集数、进度、暂停、上一集、下一集、选集和播放设置；再按 `MENU` 隐藏 |
+| 播放控件 | PASS | 默认界面 OK 暂停/继续；ExoPlayer 获取音频焦点，播放进度正常 |
+| 预加载与上下集切换（Debug） | PASS | 当前集播放稳定后预取后 3 集；按 DOWN 切集日志为 `Playback first frame episode=3 preloaded=true reused=true elapsedMs=1354` |
+| 双击返回彻底退出（Debug） | PASS | 首页卡片第一次返回仍停留应用，第二次返回回到投影仪桌面；`dumpsys activity activities` 无红果短剧任务记录 |
 | 选集侧栏 | PASS | 最新 Debug 包从更多面板进入 iOS 玻璃侧栏，当前集自动获得焦点，集数网格、分组按钮和关闭入口均可操作 |
 | 通用选择弹窗 | PASS | 最新 Debug 包中清晰度、倍速、定时和播放设置使用深色玻璃选择面板；当前值有蓝色标记与白色焦点描边 |
 | 长列表与按键隔离 | PASS | “播放设置”8 个选项可向下滚动到末项；连续方向键不会穿透播放器或触发切集 |
 | 返回栈 | PASS | 播放器返回详情，再返回首页 |
 | 断点续播 | PASS | 返回首页后“接着看”显示第 3 集和观看进度 |
+| 搜索输入（Debug） | PASS | 使用系统 `EditText` 和系统输入法，保留“搜索”按钮；移除“语音 / 手机输入 / 清空”三个按钮；系统输入法语音键由用户实测可用 |
 | 搜索 | PASS | 电视端输入 `BFLC`，出现联想并返回 17 条结果 |
 | 设置与对话框 | PASS | 设置页、版本信息和 GPL 许可对话框可读，无文字截断 |
 | 二维码登录入口 | PASS | 未登录时点击“红果账号”直接打开深色扫码登录弹窗，不显示手机号/验证码入口 |

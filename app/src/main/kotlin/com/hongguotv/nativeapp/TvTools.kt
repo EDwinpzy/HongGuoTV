@@ -64,7 +64,8 @@ class TvTools(private val activity: Activity) {
             val row=LinearLayout(activity)
             keys.forEach { key ->
                 val button=Button(activity).apply {
-                    id=View.generateViewId(); text=key; minHeight=dp(42)
+                    id=View.generateViewId(); text=key; textSize=14f; isAllCaps=false
+                    minHeight=dp(TvStyle.CONTROL_REGULAR); setPadding(0,dp(4),0,dp(4))
                     backgroundTintList=android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused),intArrayOf()),intArrayOf(TvStyle.accent,TvStyle.raised))
                     setOnClickListener { when(key) { "清空"->{ digits="";replace=false;value.text="—" }; "退格"->erase(); else->digit(key) } }
                 }

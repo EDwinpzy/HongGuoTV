@@ -46,6 +46,10 @@ object TvStyle {
 
     /** Fixed 2:3 poster ratio. Never squeeze artwork into a near-square slot. */
     const val POSTER_ASPECT = .66f
+    const val CONTROL_COMPACT = 32
+    const val CONTROL_REGULAR = 36
+    const val CONTROL_PRIMARY = 40
+    const val DIALOG_ROW = 42
 
     private val regular: Typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     private val medium: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -239,9 +243,11 @@ object TvStyle {
     }
 
     fun paintRow(view: TextView, focused: Boolean) {
+        // Settings are a quiet list until focused. Painting every row as a filled pill
+        // made the whole page look like a wall of oversized buttons.
         view.background =
-            if (focused) shape(view.context, Color.WHITE, Color.TRANSPARENT, 15)
-            else shape(view.context, Color.argb(20, 255, 255, 255), Color.TRANSPARENT, 15)
+            if (focused) shape(view.context, Color.WHITE, Color.TRANSPARENT, 12)
+            else null
         view.setTextColor(if (focused) Color.BLACK else text)
     }
 

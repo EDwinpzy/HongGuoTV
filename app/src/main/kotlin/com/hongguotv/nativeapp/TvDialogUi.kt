@@ -29,18 +29,18 @@ object TvDialogUi {
         var dialog: Dialog?=null
         val card=LinearLayout(activity).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(activity,22),dp(activity,20),dp(activity,22),dp(activity,16))
-            background=TvStyle.panel(activity,18)
+            setPadding(dp(activity,18),dp(activity,16),dp(activity,18),dp(activity,12))
+            background=TvStyle.panel(activity,16)
         }
         card.addView(TextView(activity).apply {
             text=title
-            textSize=21f
+            textSize=19f
             setTextColor(TvStyle.text)
             typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
             includeFontPadding=false
             maxLines=2
             ellipsize=TextUtils.TruncateAt.END
-        },LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(activity,14) })
+        },LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(activity,10) })
 
         val rows=mutableListOf<View>()
         val list=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
@@ -52,7 +52,7 @@ object TvDialogUi {
                 isFocusable=true
                 isFocusableInTouchMode=true
                 contentDescription=value
-                setPadding(dp(activity,14),dp(activity,10),dp(activity,14),dp(activity,10))
+                setPadding(dp(activity,12),dp(activity,8),dp(activity,12),dp(activity,8))
             }
             val marker=View(activity).apply {
                 isFocusable=false
@@ -60,10 +60,10 @@ object TvDialogUi {
                 importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 background=TvStyle.shape(activity,TvStyle.accent,Color.TRANSPARENT,2)
             }
-            row.addView(marker,LinearLayout.LayoutParams(dp(activity,3),dp(activity,18)).apply { rightMargin=dp(activity,11) })
+            row.addView(marker,LinearLayout.LayoutParams(dp(activity,3),dp(activity,16)).apply { rightMargin=dp(activity,9) })
             val text=TextView(activity).apply {
                 text=value
-                textSize=16f
+                textSize=15f
                 includeFontPadding=false
                 maxLines=2
                 ellipsize=TextUtils.TruncateAt.END
@@ -83,8 +83,8 @@ object TvDialogUi {
                 onChoice(index)
             }
             rows+=row
-            list.addView(row,LinearLayout.LayoutParams(-1,dp(activity,50)).apply {
-                if(index<labels.lastIndex) bottomMargin=dp(activity,6)
+            list.addView(row,LinearLayout.LayoutParams(-1,dp(activity,TvStyle.DIALOG_ROW)).apply {
+                if(index<labels.lastIndex) bottomMargin=dp(activity,5)
             })
         }
 
@@ -96,28 +96,28 @@ object TvDialogUi {
             clipToPadding=false
             addView(list)
         }
-        val rowHeight=dp(activity,50)
-        val rowGaps=(labels.size-1).coerceAtLeast(0)*dp(activity,6)
+        val rowHeight=dp(activity,TvStyle.DIALOG_ROW)
+        val rowGaps=(labels.size-1).coerceAtLeast(0)*dp(activity,5)
         val desiredHeight=labels.size*rowHeight+rowGaps
-        val maxHeight=(activity.resources.displayMetrics.heightPixels*.56f).toInt()
+        val maxHeight=(activity.resources.displayMetrics.heightPixels*.52f).toInt()
         card.addView(scroll,LinearLayout.LayoutParams(-1,desiredHeight.coerceAtMost(maxHeight)))
 
         val actions=LinearLayout(activity).apply {
             gravity=Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(0,dp(activity,14),0,0)
+            setPadding(0,dp(activity,10),0,0)
         }
         fun action(label: String,click: ()->Unit): TextView {
             val view=TextView(activity).apply {
                 id=View.generateViewId()
                 text=label
-                textSize=15f
+                textSize=14.5f
                 gravity=Gravity.CENTER
                 typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
                 includeFontPadding=false
                 isFocusable=true
                 isFocusableInTouchMode=true
-                setPadding(dp(activity,18),dp(activity,10),dp(activity,18),dp(activity,10))
-                minHeight=dp(activity,44)
+                setPadding(dp(activity,14),dp(activity,7),dp(activity,14),dp(activity,7))
+                minHeight=dp(activity,TvStyle.CONTROL_REGULAR)
             }
             fun paint(focused: Boolean) {
                 view.background=TvStyle.control(activity,focused,radius=10)
@@ -129,7 +129,7 @@ object TvDialogUi {
             return view
         }
         val extraButton=if(extra!=null) action(extra) { dialog?.dismiss(); onExtra() } else null
-        if(extraButton!=null) actions.addView(extraButton,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(activity,8) })
+        if(extraButton!=null) actions.addView(extraButton,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(activity,6) })
         val cancel=action("取消") { dialog?.dismiss() }
         actions.addView(cancel,LinearLayout.LayoutParams(-2,-2))
         card.addView(actions,-1,-2)
@@ -157,7 +157,7 @@ object TvDialogUi {
         }
         dialog=created
         created.setOnShowListener {
-            val width=(activity.resources.displayMetrics.widthPixels*.58f).toInt().coerceAtMost(dp(activity,680))
+            val width=(activity.resources.displayMetrics.widthPixels*.52f).toInt().coerceAtMost(dp(activity,620))
             created.window?.setLayout(width,ViewGroup.LayoutParams.WRAP_CONTENT)
             rows.getOrNull(selected.coerceAtLeast(0))?.requestFocus()
         }
