@@ -2068,7 +2068,7 @@ class MainActivity: Activity() {
             playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
             if(library.danmaku) {
                 danmakuOverlay=DanmakuOverlay(this).apply { restyle(currentDanmakuParams()) }
-                root.addView(danmakuOverlay,FrameLayout.LayoutParams(-1,-1))
+                root.addView(danmakuOverlay,danmakuLayoutParams())
             }
             playbackSpinner=ProgressBar(this,null,android.R.attr.progressBarStyleLarge).apply {
                 indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
@@ -2509,7 +2509,7 @@ class MainActivity: Activity() {
         if(library.danmaku) {
             if(danmakuOverlay==null) {
                 danmakuOverlay=DanmakuOverlay(this).apply { restyle(currentDanmakuParams()) }
-                root.addView(danmakuOverlay,root.indexOfChild(hud.parent as View).coerceAtLeast(1))
+                root.addView(danmakuOverlay,root.indexOfChild(hud.parent as View).coerceAtLeast(1),danmakuLayoutParams())
                 startDanmakuFetch()
             }
             Toast.makeText(this,"弹幕已开启",Toast.LENGTH_SHORT).show()
@@ -2520,6 +2520,8 @@ class MainActivity: Activity() {
             Toast.makeText(this,"弹幕已关闭",Toast.LENGTH_SHORT).show()
         }
     }
+    /** 弹幕只绘制在顶部的数行内；限制 View 高度，避免透明层每帧参与全屏合成。 */
+    private fun danmakuLayoutParams()=FrameLayout.LayoutParams(-1,(resources.displayMetrics.heightPixels*.45f).toInt(),Gravity.TOP)
     /** 后台持续拉取真实弹幕：跟随播放进度逐窗口推进直到片尾，网络失败重试不退出。
      *  旧实现一次性预取全部窗口后 break——短剧 7.5s 拉完就再无新弹幕（播到一半弹幕消失）、
      *  一页失败整个循环退出（有时没弹幕）、切集瞬间在途数据被丢（开局弹幕闪现即失）。 */
