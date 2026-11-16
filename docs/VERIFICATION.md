@@ -61,7 +61,7 @@
 | 旧播放接口（2026-11-16 复查） | BLOCKED | 旧 `video_tab` GET 与旧 POST 仍返回 HTTP 200 + 0 字节；已由 v5 签名通道替代，保留为次级回退 |
 | 官网完整片源兜底 | PASS（有限） | `fallback-play-info` 对部分公开老剧返回完整未加密 H264 MP4（《少夫人来自东北3》第 1 集 178.966 秒 / 约 17.5 MB）；对新剧常返回 403，因此只作为有限兜底 |
 
-构建验证：`core` 与 `app` JVM 测试共 228 项，0 失败、0 错误、9 跳过（需显式开启的联网探针）；`:app:lintVitalRelease`、`:app:assembleRelease` 和 `:app:bundleRelease` 均通过。最终 APK 版本为 `1.1.1 / 10101`，v2 签名校验通过。
+构建验证：`core` 与 `app` JVM 测试共 228 项，0 失败、0 错误、9 跳过（需显式开启的联网探针）；`:app:lintVitalRelease`、`:app:assembleRelease` 和 `:app:bundleRelease` 均通过。最终 APK 版本为 `1.1.2 / 10102`，v2 签名校验通过。
 
 ## 未验证或有限制
 
