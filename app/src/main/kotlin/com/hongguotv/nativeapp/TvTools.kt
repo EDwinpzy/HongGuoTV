@@ -3,6 +3,7 @@ package com.hongguotv.nativeapp
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.ConnectivityManager
@@ -26,13 +27,13 @@ import java.util.concurrent.Executors
 class TvTools(private val activity: Activity) {
     private val main=Handler(Looper.getMainLooper())
     private val worker=Executors.newSingleThreadExecutor()
-    private var dialog: AlertDialog?=null
+    private var dialog: Dialog?=null
     val showing: Boolean get()=dialog?.isShowing==true
     private var phone: java.io.Closeable?=null
     private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.WHITE); setPadding(dp(8),dp(4),dp(8),dp(4)) }
     private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(4),dp(16),dp(8)) }
-    private fun open(next: AlertDialog,anchor: View?) {
+    private fun open(next: Dialog,anchor: View?) {
         dialog?.dismiss(); dialog=next
         next.setOnDismissListener { if(dialog===next) dialog=null; if(anchor?.isAttachedToWindow==true) anchor.requestFocus() }
         next.show()
@@ -45,9 +46,8 @@ class TvTools(private val activity: Activity) {
         open(next,anchor); next.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
     }
     fun choose(title: String,labels: List<String>,anchor: View?,onChoice: (Int)->Unit,extra: String?=null,onExtra: ()->Unit={}) {
-        val builder=AlertDialog.Builder(activity).setTitle(title).setItems(labels.toTypedArray()) { _,index-> onChoice(index) }.setNegativeButton("取消",null)
-        if(extra!=null) builder.setNeutralButton(extra) { _,_-> onExtra() }
-        val next=builder.create(); open(next,anchor); next.listView.requestFocus()
+        val next=TvDialogUi.choice(activity,title,labels,extra=extra,onChoice=onChoice,onExtra=onExtra)
+        open(next,anchor)
     }
     fun episodePicker(count: Int,current: Int,anchor: View?,select: (Int)->Unit) {
         val content=column(); var digits=(current+1).toString(); var replace=true

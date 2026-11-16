@@ -13,8 +13,8 @@ import com.hongguotv.core.Series
 /** Fixed text slots keep D-pad movement from resizing the content below the preview. */
 class SeriesPreview(context: Context): LinearLayout(context) {
     private fun label(size: Float,color: Int)=TextView(context).apply { textSize=size; setTextColor(color); includeFontPadding=false }
-    private val title=label(27f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
-    private val meta=label(12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
+    private val title=label(29f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); letterSpacing=.01f }
+    private val meta=label(12.5f,TvStyle.mutedBright).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; letterSpacing=.02f }
     /** Collapsible mode (theme tabs): collapsed = the whole bar is GONE, no blank row
      *  between the theme bar and the card grid; it expands as soon as a card takes focus. */
     var collapsible=false
@@ -23,7 +23,7 @@ class SeriesPreview(context: Context): LinearLayout(context) {
     init {
         orientation=VERTICAL
         val dp=resources.displayMetrics.density
-        setPadding(0,(7*dp).toInt(),0,(12*dp).toInt())
+        setPadding(0,(9*dp).toInt(),0,(14*dp).toInt())
         addView(title)
         addView(meta,LayoutParams(-1,-2).apply { topMargin=(5*dp).toInt() })
         show(null,"")
@@ -82,7 +82,12 @@ class HomeScreen(
     private var lastRow: String?=null
     private var restoring=false
     private var revision=0
-    val refresh=label("正在更新热门…",13f).apply { id=View.generateViewId(); tag="home:refresh"; isFocusable=true; isFocusableInTouchMode=true; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(12),dp(8),dp(12),dp(8)); background=shape(false); setOnFocusChangeListener { _,f -> background=shape(f); if(f) { lastFocus=tag.toString(); deselected?.invoke() } } }
+    val refresh=label("正在更新热门…",13f).apply {
+        id=View.generateViewId(); tag="home:refresh"; isFocusable=true; isFocusableInTouchMode=true; gravity=Gravity.CENTER_VERTICAL
+        typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); setPadding(dp(14),dp(10),dp(14),dp(10))
+        background=TvStyle.control(context,false,radius=12)
+        setOnFocusChangeListener { _,f -> background=TvStyle.control(context,f,radius=12); if(f) { lastFocus=tag.toString(); deselected?.invoke() } }
+    }
     init { orientation=VERTICAL; scroll.addView(contents); addView(scroll,LayoutParams(-1,0,1f)) }
 
     fun capturePosition(): Position {
@@ -131,10 +136,10 @@ class HomeScreen(
         contents.removeAllViews(); rows.clear(); cards.clear(); moreButton=null; lastRow=null
         shelves.filter { it.entries.isNotEmpty() || it.more!=null }.forEach { shelf ->
             val block=LinearLayout(context).apply { orientation=VERTICAL }
-            val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(2),dp(4),dp(2),dp(9)) }
-            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=2) },LayoutParams(dp(3),dp(14)).apply { rightMargin=dp(8) })
-            heading.addView(label(shelf.title,16f).apply { setTypeface(null,Typeface.BOLD) },LayoutParams(0,-2,1f))
-            heading.addView(label("左右选剧  ·  上下切换分区",10f,TvStyle.muted))
+            val heading=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(dp(2),dp(6),dp(2),dp(10)) }
+            heading.addView(View(context).apply { background=TvStyle.shape(context,accent,radius=2) },LayoutParams(dp(4),dp(16)).apply { rightMargin=dp(9) })
+            heading.addView(label(shelf.title,17f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); letterSpacing=.01f },LayoutParams(0,-2,1f))
+            heading.addView(label("左右选剧  ·  上下切换分区",10f,TvStyle.mutedBright).apply { setPadding(dp(9),dp(4),dp(9),dp(4)); background=TvStyle.chip(context) })
             block.addView(heading)
             val horizontal=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false; setPadding(dp(2),dp(2),dp(2),dp(2)) }
             val line=LinearLayout(context).apply { orientation=HORIZONTAL; gravity=Gravity.TOP }
@@ -143,11 +148,15 @@ class HomeScreen(
             fun addCard(entry: Entry?,moreAction: (() -> Unit)?=null) {
                 val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
-                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
+                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(6),dp(6),dp(6),dp(10)); background=shape(false) }
                 val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
-                view.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },LayoutParams(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
-                val title=label(entry?.series?.title ?: "查看全部",14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) }
-                val badge=label(entry?.label ?: shelf.title,12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) }
+                val art=RoundedFrameLayout(context,12f)
+                art.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },FrameLayout.LayoutParams(-1,-1))
+                val artBorder=View(context).apply { isClickable=false; isFocusable=false; background=TvStyle.shape(context,android.graphics.Color.TRANSPARENT,TvStyle.outline,12,1f) }
+                art.addView(artBorder,FrameLayout.LayoutParams(-1,-1))
+                view.addView(art,LayoutParams(-1,((width-dp(12))/TvStyle.POSTER_ASPECT).toInt()))
+                val title=label(entry?.series?.title ?: "查看全部",14.5f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(4),dp(8),dp(4),0) }
+                val badge=label(entry?.label ?: shelf.title,11.5f,TvStyle.mutedBright).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(4),dp(2),0,0) }
                 val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) INVISIBLE else VISIBLE; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
                 view.addView(title); view.addView(badge); view.addView(progress,LayoutParams(-1,dp(3)).apply { topMargin=dp(4) })
                 val card=Card(key,view,image,title,badge,progress,entry)
@@ -160,6 +169,7 @@ class HomeScreen(
                 }
                 view.setOnFocusChangeListener { _,focused ->
                     view.background=shape(focused)
+                    artBorder.background=TvStyle.shape(context,android.graphics.Color.TRANSPARENT,if(focused) TvStyle.accentBright else TvStyle.outline,12,if(focused) 2f else 1f)
                     if(focused) {
                         lastFocus=key; remember(key); card.entry?.let { selected(it.series,it.label) }
                         if(!restoring) {
@@ -198,7 +208,13 @@ class HomeScreen(
         contents.addView(refresh,LayoutParams(-1,-2).apply { topMargin=dp(10) })
         val footer=mutableListOf<View>(refresh)
         if(more!=null) {
-            val next=label("更多热门  ›",15f).apply { id=View.generateViewId(); tag="home:more"; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(12),dp(12),dp(12),dp(12)); background=shape(false); setOnFocusChangeListener { _,f -> background=shape(f); if(f) { lastFocus=tag.toString(); deselected?.invoke() } }; setOnClickListener { more() } }
+            val next=label("更多热门  ›",15f).apply {
+                id=View.generateViewId(); tag="home:more"; isFocusable=true; isFocusableInTouchMode=true
+                typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); setPadding(dp(14),dp(12),dp(14),dp(12))
+                background=TvStyle.control(context,false,radius=12)
+                setOnFocusChangeListener { _,f -> background=TvStyle.control(context,f,radius=12); if(f) { lastFocus=tag.toString(); deselected?.invoke() } }
+                setOnClickListener { more() }
+            }
             contents.addView(next,LayoutParams(-1,-2).apply { topMargin=dp(8) }); footer+=next; moreButton=next
         }
         rows.forEachIndexed { i,row -> row.cards.forEachIndexed { j,card ->
