@@ -13,6 +13,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.*
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
@@ -31,8 +32,11 @@ class TvTools(private val activity: Activity) {
     val showing: Boolean get()=dialog?.isShowing==true
     private var phone: java.io.Closeable?=null
     private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
-    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.WHITE); setPadding(dp(8),dp(4),dp(8),dp(4)) }
-    private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(4),dp(16),dp(8)) }
+    private fun label(value: String,size: Float=16f,color: Int=TvStyle.text)=TextView(activity).apply {
+        text=value; textSize=size; setTextColor(color); includeFontPadding=false; typeface=TvStyle.typeface(false)
+        setPadding(dp(8),dp(5),dp(8),dp(5))
+    }
+    private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(6),dp(20),dp(10)) }
     private fun open(next: Dialog,anchor: View?) {
         dialog?.dismiss(); dialog=next
         next.setOnDismissListener { if(dialog===next) dialog=null; if(anchor?.isAttachedToWindow==true) anchor.requestFocus() }
@@ -60,8 +64,9 @@ class TvTools(private val activity: Activity) {
             val row=LinearLayout(activity)
             keys.forEach { key ->
                 val button=Button(activity).apply {
-                    id=View.generateViewId(); text=key; minHeight=dp(42)
-                    backgroundTintList=android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused),intArrayOf()),intArrayOf(Color.rgb(255,99,76),Color.rgb(31,36,47)))
+                    id=View.generateViewId(); text=key; textSize=14f; isAllCaps=false
+                    minHeight=dp(TvStyle.CONTROL_REGULAR); setPadding(0,dp(4),0,dp(4))
+                    backgroundTintList=android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused),intArrayOf()),intArrayOf(TvStyle.accent,TvStyle.raised))
                     setOnClickListener { when(key) { "清空"->{ digits="";replace=false;value.text="—" }; "退格"->erase(); else->digit(key) } }
                 }
                 buttons+=button
@@ -99,6 +104,10 @@ class TvTools(private val activity: Activity) {
         val pixels=IntArray(360*360) { i->if(bits[i%360,i/360]) Color.BLACK else Color.WHITE }
         setImageBitmap(Bitmap.createBitmap(pixels,360,360,Bitmap.Config.ARGB_8888))
         contentDescription="二维码"
+        setPadding(dp(10),dp(10),dp(10),dp(10))
+        background=TvStyle.shape(activity,Color.WHITE,Color.TRANSPARENT,16)
+        clipToOutline=true
+        outlineProvider=ViewOutlineProvider.BACKGROUND
     }
     fun phoneInput(anchor: View?,submit: (String)->Unit) {
         // Reuse a live session: within the 5-minute TTL re-opening 手机输入 shows the SAME

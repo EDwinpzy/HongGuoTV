@@ -931,18 +931,18 @@ class AccountController(
                 val panel =
                     LinearLayout(activity).apply {
                         orientation = LinearLayout.VERTICAL
-                        setPadding(px(22), px(20), px(22), px(16))
+                        setPadding(px(20), px(16), px(20), px(12))
                         background = TvStyle.panel(activity, 18)
                     }
                 panel.addView(
-                    label("红果账号扫码登录", 22f, TvStyle.text).apply {
+                    label("红果账号扫码登录", 20f, TvStyle.text).apply {
                         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     },
                     LinearLayout.LayoutParams(-1, -2),
                 )
                 panel.addView(
-                    label("使用手机红果 App 确认登录", 14f, TvStyle.mutedBright).apply {
-                        setPadding(0, px(5), 0, px(14))
+                    label("使用手机红果 App 确认登录", 13f, TvStyle.mutedBright).apply {
+                        setPadding(0, px(4), 0, px(10))
                     },
                     LinearLayout.LayoutParams(-1, -2),
                 )
@@ -968,10 +968,10 @@ class AccountController(
                     },
                     FrameLayout.LayoutParams(-1, -1),
                 )
-                body.addView(frame, LinearLayout.LayoutParams(px(274), px(274)))
+                body.addView(frame, LinearLayout.LayoutParams(px(240), px(240)))
                 val info = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(px(24), 0, 0, 0)
+                    setPadding(px(20), 0, 0, 0)
                 }
                 info.addView(
                     label("手机红果 App", 14f, TvStyle.accentBright).apply {
@@ -1008,8 +1008,8 @@ class AccountController(
                         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                         isFocusable = true
                         isFocusableInTouchMode = true
-                        setPadding(px(20), px(10), px(20), px(10))
-                        minHeight = px(46)
+                        setPadding(px(14), px(7), px(14), px(7))
+                        minHeight = px(TvStyle.CONTROL_REGULAR)
                         contentDescription = "关闭扫码登录"
                     }
                 fun paintClose(focused: Boolean) {
@@ -1023,9 +1023,9 @@ class AccountController(
                     LinearLayout(activity).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.END
-                        setPadding(0, px(14), 0, 0)
+                        setPadding(0, px(10), 0, 0)
                     }
-                actions.addView(close, LinearLayout.LayoutParams(px(132), px(48)))
+                actions.addView(close, LinearLayout.LayoutParams(px(112), px(TvStyle.CONTROL_REGULAR)))
                 panel.addView(actions, LinearLayout.LayoutParams(-1, -2))
                 current =
                     Dialog(activity).apply {
