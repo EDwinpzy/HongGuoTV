@@ -51,6 +51,9 @@ class PlaybackDeviceSession(
         return toProfile(registerDevice(http)).also { ready = it }
     }
 
+    @Synchronized
+    internal fun existing(): Profile? = ready
+
     /**
      * 空响应身份屏蔽自愈（2026-11-01 事件实测：屏蔽按设备身份生效，换域名与新连接无法逃逸，
      * 全新身份即时恢复）：立即重新注册一次匿名设备。成功则替换内存身份（cdid 一并换新）并返回

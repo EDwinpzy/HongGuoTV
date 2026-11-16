@@ -82,13 +82,13 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         // later (verified 2026-10: all four rank boards 404 on one probe, 200 on the
         // next). Retry transient failures once or twice so the blip never surfaces.
         var lastError: IOException? = null
-        for (attempt in 1..3) {
+        for (attempt in 1..5) {
             try { return textOnce(url, headers) }
             catch (e: IOException) {
                 lastError = e
                 val transient = e.message?.contains("HTTP 4") == true || e.message?.contains("HTTP 5") == true
-                if (!transient || attempt == 3) throw e
-                Thread.sleep(300L * attempt)
+                if (!transient || attempt == 5) throw e
+                Thread.sleep(400L * attempt)
             }
         }
         throw lastError ?: IOException("内容请求失败")
@@ -116,8 +116,11 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     /** Shared App API transport: device identity, query profile, X-Khronos/X-Gorgon signature. */
     private val appApi = AppApiTransport(http, clock)
 
-    /** Playback fallback chain: App API (multi-quality + CENC) -> public MP4 (360p). */
-    private val streams = StreamScheduler(StreamSource.default(appApi, http, webUa, site))
+    /** Full-episode website fallback for episodes whose App model only offers non-H264 tiers. */
+    private val webFallback = WebFallbackStreamSource(http, webUa, site)
+
+    /** Playback fallback chain: v5 App API -> legacy App API -> full-episode web -> 10s public MP4. */
+    private val streams = StreamScheduler(StreamSource.default(appApi, http, webUa, site, webFallback))
 
     private fun appRequest(path: String, payload: String?): JSONObject =
         appApi.request(path, payload, signed = true, identity = playbackSession.profile(http))
@@ -329,7 +332,25 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      *  ~210KB page loads. */
     fun ranking(board: RankBoard, page: Int = 1): CatalogPage {
         require(page in 1..100)
-        return ComicRank.parse(webText("$site/rank/${board.path}?page=$page"),page,board)
+        // The board page has been observed returning a 200 skeleton (or a transient
+        // 404 from one CDN edge) while the next request a second later carries the
+        // full SSR payload. Retry the parse once as well as the HTTP fetch itself.
+        var last: IOException? = null
+        for (attempt in 1..2) {
+            try {
+                return ComicRank.parse(webText("$site/rank/${board.path}?page=$page"), page, board)
+            } catch (e: IOException) {
+                last = e
+                if (attempt == 2) break
+                try {
+                    Thread.sleep(600L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+        }
+        throw last ?: IOException("榜单加载失败")
     }
 
     // ---------- search (website XHR) ----------
@@ -498,10 +519,28 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     fun playbackTiers(id: String, maxQuality: Int = 1080, type: ContentType = ContentType.SHORT, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): List<StreamInfo> {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
-        return streams.ladder(id, maxQuality, type, metadataAhead, speculative)
+        val tiers = streams.ladder(id, maxQuality, type, metadataAhead, speculative)
+        logger.info("ladder $id: " + tiers.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" })
+        if (tiers.any { it.isAvc() }) return tiers
+        // v5 currently returns a single 1080x1920 ByteVC1 rendition for many
+        // episodes. S621 advertises HEVC support but fails after roughly two
+        // minutes, so keep a complete H264 episode in the same ladder as the
+        // last-resort tier. Quality wins first; H264 only breaks a quality tie.
+        return runCatching {
+            val fallback = webFallback.stream(id, maxQuality, type, metadataAhead, speculative)
+            logger.info("web fallback $id: ${fallback.quality}/${fallback.codec}")
+            tiers + fallback
+        }.onFailure {
+            logger.warning("web fallback failed for $id: $it")
+        }.getOrDefault(tiers)
     }
 
+    private fun StreamInfo.isAvc() =
+        codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")
+
     companion object {
+        private val logger = java.util.logging.Logger.getLogger("com.hongguotv.core.stream")
+
         fun extractRouter(html: String): JSONObject {
             val marker=html.indexOf("_ROUTER_DATA"); if(marker<0) throw IOException("页面没有内容数据")
             val first=html.indexOf('{',marker); if(first<0) throw IOException("页面数据格式错误")

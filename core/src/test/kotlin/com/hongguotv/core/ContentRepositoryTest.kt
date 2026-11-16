@@ -96,7 +96,7 @@ class ContentRepositoryTest {
         val result=repo.stream("123",1080)
         assertEquals("https://example.com/vtab-1080",result.url)
         assertEquals("1080P",result.quality)
-        assertTrue(requests.none { it.url.encodedPath.startsWith("/novel/player/") })
+        assertTrue(requests.none { it.url.encodedPath == "/novel/player/multi_video_model/v1/" })
     }
 
     @Test fun videoTabFailureFallsBackToOldPath() {
@@ -504,6 +504,13 @@ class ContentRepositoryTest {
 
     private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
+            // The v5 mobile channel is the production first choice; these fixtures
+            // exercise the older fallback chain, so fail v5 locally without network.
+            if (chain.request().url.encodedPath == "/novel/player/multi_video_model/player/v1") {
+                return@addInterceptor Response.Builder().request(chain.request())
+                    .protocol(Protocol.HTTP_1_1).code(400).message("Bad Request")
+                    .body("".toResponseBody()).build()
+            }
             // The App API now registers the device first (2026-10-27 crackdown on
             // unregistered device_ids): answer the registration endpoint with a
             // server-issued identity so feed/playback calls can proceed.
