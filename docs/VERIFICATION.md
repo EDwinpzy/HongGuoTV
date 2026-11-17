@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.2（versionCode 10102） |
+| 应用版本 | 1.1.3（versionCode 10103） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -142,7 +142,7 @@
 
 本轮实机输入均为 ADB 注入，不是物理遥控器。长时间连续推荐滑动、弱网重试、更多账号推荐池长度和播放中频道切换后的二次播放仍待验证。
 
-最终 Debug 复测：账号恢复前会预热当前身份，恢复后按账号身份再预热；从短剧返回推荐日志 `elapsedMs=30`，首帧约 `2.7s`，首次进入首帧约 `4.5s`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:lintVitalRelease` 通过，242 项测试、0 失败、0 错误、9 跳过；Release APK v2 签名校验通过，SHA-256 为 `850CF367171EAE7BA698E26120CFC16775DD25A03AE1173BC30EE1E319F77BEC`。
+最终 1.1.3 Release 候选复测：账号恢复前会预热当前身份，恢复后按账号身份再预热；从短剧返回推荐日志 `elapsedMs=30`，首帧约 `2.7s`，首次进入首帧约 `4.5s`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过，242 项测试、0 失败、0 错误、9 跳过；Release APK/AAB 的最终签名摘要见 v1.1.3 GitHub Release。
 
 ## 未验证或有限制
 
