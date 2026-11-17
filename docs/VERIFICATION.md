@@ -147,6 +147,16 @@
 
 最终 1.1.3 Release 候选复测：账号恢复前会预热当前身份，恢复后按账号身份再预热；从短剧返回推荐日志 `elapsedMs=30`，首帧约 `2.7s`，首次进入首帧约 `4.5s`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过，242 项测试、0 失败、0 错误、9 跳过；Release APK/AAB 的最终签名摘要见 v1.1.3 GitHub Release。
 
+## 2026-11-18 推荐页仅播放横屏视频（Debug 实机）
+
+验证分支为 `codex/landscape-recommendation`。账号推荐流逐条读取 `video_list[0].vertical`：`true` 的竖屏作品在入队前剔除，未知值保留；剔除后继续翻页凑满首屏，服务端游标仍按原始条目推进。设备输入均为 ADB 注入。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 横屏推荐过滤 | PASS（单测） | 新增单测覆盖显式竖屏剔除、未知方向保留、纯竖屏首批继续翻页并保持原始 `offset` |
+| S621 连续换片 | PASS | 推荐页连续切换 6 条，日志均为 `1080P/bytevc1/1920×1080`，未出现 `1080×1920` |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；247 项测试、0 失败、0 错误、9 跳过 |
+
 ## 未验证或有限制
 
 | 项目 | 状态 | 说明 |

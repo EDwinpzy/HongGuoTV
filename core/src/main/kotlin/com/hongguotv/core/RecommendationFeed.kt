@@ -48,6 +48,12 @@ class RecommendationCursor internal constructor(
 class NoNewRecommendationsException(val rememberedCount: Int = 0) :
     IOException("暂时没有新的推荐，请稍后再试")
 
+internal data class RecommendationPage(
+    val items: List<Series>,
+    val session: String,
+    val seenIds: List<String>,
+)
+
 /**
  * Official App recommendation feed. Account cookies stay on official fqnovel hosts;
  * the no-redirect client prevents credentials from being forwarded elsewhere.
@@ -124,7 +130,7 @@ class RecommendationFeed(
                     throw problem
                 }
 
-                val nextSession = parsed.second.ifBlank { cursor.session }
+                val nextSession = parsed.session.ifBlank { cursor.session }
                 val discoveredFlow =
                     if (!cursor.unsignedFallback && cursor.cellFlow == null) cellFlow(result) else null
                 cursor.offset = when {
@@ -141,8 +147,8 @@ class RecommendationFeed(
                 if (discoveredFlow != null) cursor.cellFlow = discoveredFlow
 
                 val seen = cursor.seenIds()
-                val fresh = parsed.first.items.filterNot { it.id in seen }
-                cursor.remember(parsed.first.items.map { it.id })
+                val fresh = parsed.items.filterNot { it.id in seen }
+                cursor.remember(parsed.seenIds)
                 fresh.forEach { item ->
                     cursor.markSeen(item.id)
                     collected.putIfAbsent(item.id, item)
@@ -256,10 +262,10 @@ class RecommendationFeed(
     }
 
     companion object {
-        // A vertical feed only needs a few entries to start playing. Keeping the first
+        // The TV feed only needs a few entries to start playing. Keeping the first
         // batch small avoids spending the whole tab-switch window aggregating 14 rows.
         private const val PAGE_TARGET = 4
-        private const val MAX_ROUNDS = 2
+        private const val MAX_ROUNDS = 4
         private const val FEED_UA =
             "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
         private const val LEGACY_UA =
@@ -305,7 +311,7 @@ class RecommendationFeed(
             return RecommendationCursor.CellFlow(cellId, planId, version)
         }
 
-        internal fun parseCell(result: JSONObject): Pair<CatalogPage, String> {
+        internal fun parseCell(result: JSONObject): RecommendationPage {
             if (result.optInt("code", -1) != 0)
                 throw IOException("推荐续刷暂不可用（错误码 ${result.optInt("code", -1)}）")
             val data = result.optJSONObject("data") ?: throw IOException("推荐续刷数据格式已变化")
@@ -332,7 +338,7 @@ class RecommendationFeed(
             return count
         }
 
-        internal fun parse(result: JSONObject): Pair<CatalogPage, String> {
+        internal fun parse(result: JSONObject): RecommendationPage {
             if (result.optInt("code", -1) != 0)
                 throw IOException("推荐暂不可用（错误码 ${result.optInt("code", -1)}），请稍后刷新")
             val tab = result.optJSONObject("data")?.optJSONArray("tab_item")?.objects()
@@ -348,7 +354,7 @@ class RecommendationFeed(
                     }
                 }
             }
-            val items = rows.mapNotNull { row ->
+            val entries = rows.mapNotNull { row ->
                 val id = row.str("series_id").ifBlank { row.str("book_id") }
                 val title = row.str("series_title")
                     .ifBlank { row.str("book_name") }
@@ -356,7 +362,7 @@ class RecommendationFeed(
                 if (!id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) null
                 else {
                     val count = row.optInt("episode_cnt")
-                    Series(
+                    row to Series(
                         id,
                         title,
                         coverUrl(row.str("series_cover").ifBlank { row.str("cover") }),
@@ -364,9 +370,37 @@ class RecommendationFeed(
                         if (count > 0) "共 $count 集" else "",
                     )
                 }
-            }.distinctBy { it.id }
-            if (items.isEmpty()) throw IOException("推荐未返回可播放的剧集，请刷新重试")
-            return CatalogPage(items, true) to session
+            }.distinctBy { it.second.id }
+            if (entries.isEmpty()) throw IOException("推荐未返回可播放的剧集，请刷新重试")
+            return RecommendationPage(
+                items = entries.filterNot { (row, _) -> vertical(row) == true }.map { it.second },
+                session = session,
+                seenIds = entries.map { it.second.id },
+            )
+        }
+
+        /**
+         * The account feed marks each series' orientation on its first video. Missing
+         * metadata stays eligible: several server variants omit the flag, while a
+         * TV-only feed must not become empty because of an unknown value.
+         */
+        private fun vertical(row: JSONObject): Boolean? {
+            val videos = row.optJSONArray("video_list")?.objects().orEmpty()
+            for (video in videos) {
+                flag(video.opt("vertical"))?.let { return it }
+            }
+            return flag(row.opt("vertical"))
+        }
+
+        private fun flag(value: Any?): Boolean? = when (value) {
+            is Boolean -> value
+            is Number -> value.toInt() != 0
+            is String -> when (value.trim().lowercase()) {
+                "true", "1", "vertical", "portrait" -> true
+                "false", "0", "horizontal", "landscape" -> false
+                else -> null
+            }
+            else -> null
         }
     }
 }

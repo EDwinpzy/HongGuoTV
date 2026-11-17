@@ -14,7 +14,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecommendationFeedTest {
-    private fun feedBody(ids: List<String>,session: String="recommend-session") = JSONObject()
+    private fun feedBody(
+        ids: List<String>,
+        session: String = "recommend-session",
+        vertical: Map<String, Boolean> = emptyMap(),
+    ) = JSONObject()
         .put("code",0)
         .put("data",JSONObject().put("tab_item",JSONArray().put(
             JSONObject()
@@ -24,11 +28,17 @@ class RecommendationFeedTest {
                     JSONObject().put("cell_data",JSONArray().put(
                         JSONObject().put("video_data",JSONArray().apply {
                             ids.forEachIndexed { index,id ->
-                                put(JSONObject()
+                                val row=JSONObject()
                                     .put("series_id",id)
                                     .put("series_title","推荐$id")
                                     .put("series_cover","https://example.com/$id.jpg")
-                                    .put("episode_cnt",index+10))
+                                    .put("episode_cnt",index+10)
+                                vertical[id]?.let { value ->
+                                    row.put("video_list",JSONArray().put(
+                                        JSONObject().put("vertical",value)
+                                    ))
+                                }
+                                put(row)
                             }
                         })
                     ))
@@ -135,5 +145,63 @@ class RecommendationFeedTest {
         assertEquals(first.items.map { it.id },reopened.items.map { it.id })
         assertEquals(second.items.map { it.id },reopenedSecond.items.map { it.id })
         assertEquals(2,requests.size)
+    }
+
+    @Test fun portraitEntriesAreDroppedWhileUnknownOrientationStaysEligible() {
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            val body=feedBody(
+                listOf("401","402","403"),
+                vertical=mapOf("401" to false,"402" to true),
+            )
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).build()
+        }.build()
+        val feed=RecommendationFeed(
+            http,
+            AccountCredentials("session=real-account"),
+            pageTarget=3,
+            maxRounds=1,
+            playbackSession=PlaybackDeviceSession {
+                DeviceRegister.Registered("1905892595378490","1905892595382586")
+            },
+            clock={ 1_760_000_000_000L },
+        )
+
+        val result=feed.page(1)
+
+        assertEquals(listOf("401","403"),result.items.map { it.id })
+        assertTrue(feed.cursor.seenIds().contains("402"))
+    }
+
+    @Test fun pagingContinuesPastPortraitOnlyRoundsUntilEnoughLandscapeItems() {
+        val offsets=mutableListOf<String?>()
+        var calls=0
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            offsets+=chain.request().url.queryParameter("offset")
+            calls++
+            val body=when(calls) {
+                1 -> feedBody(listOf("411","412"),vertical=mapOf("411" to true,"412" to true))
+                2 -> feedBody(listOf("413"),vertical=mapOf("413" to true))
+                else -> feedBody(listOf("414","415"),vertical=mapOf("414" to false,"415" to false))
+            }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).build()
+        }.build()
+        val feed=RecommendationFeed(
+            http,
+            AccountCredentials("session=real-account"),
+            pageTarget=2,
+            maxRounds=3,
+            playbackSession=PlaybackDeviceSession {
+                DeviceRegister.Registered("1905892595378490","1905892595382586")
+            },
+            clock={ 1_760_000_000_000L },
+        )
+
+        val result=feed.page(1)
+
+        assertEquals(listOf("414","415"),result.items.map { it.id })
+        assertEquals(listOf("0","2","3"),offsets)
+        assertEquals(3,calls)
     }
 }
