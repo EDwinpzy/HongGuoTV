@@ -24,6 +24,32 @@ class PlaybackSelectionTest {
         assertTrue(attempts.isEmpty())
     }
 
+    @Test fun explicitQualityChangeRetriesLearnedFailedTopPrimary() {
+        val attempts=primaryPlaybackAttempts(
+            listOf(hdHevc,sdFallback),
+            1080,
+            { it===sdFallback },
+            { it===hdHevc },
+            retryLearned=true,
+        )
+        assertEquals(listOf(hdHevc),attempts.map { it.tier })
+        assertTrue(attempts.single().forced)
+    }
+
+    @Test fun explicitQualityChangeTriesTopPrimaryBeforeLowerSupportedTier() {
+        val sdAvc=StreamInfo("https://signed/480-avc.mp4",null,"480P","h264",854,480,480)
+        val attempts=primaryPlaybackAttempts(
+            listOf(hdHevc,sdAvc,sdFallback),
+            1080,
+            { it===sdAvc },
+            { it===hdHevc },
+            retryLearned=true,
+        )
+        assertEquals(listOf(hdHevc,sdAvc),attempts.map { it.tier })
+        assertTrue(attempts.first().forced)
+        assertFalse(attempts.last().forced)
+    }
+
     @Test fun supportedHigherTierWinsWithoutForcing() {
         val attempts=primaryPlaybackAttempts(listOf(hdHevc,hdAvc,sdFallback),1080,{ it===hdAvc },{ false })
         assertEquals(listOf(hdAvc),attempts.map { it.tier })
@@ -37,8 +63,36 @@ class PlaybackSelectionTest {
         assertFalse(attempts.single().forced)
     }
 
+    @Test fun explicitRetryStillRespectsQualityCap() {
+        val hd720=StreamInfo("https://signed/720.mp4",null,"720P","bytevc1",720,1280,720)
+        val attempts=primaryPlaybackAttempts(
+            listOf(hdHevc,hd720,sdFallback),
+            720,
+            { it===hd720 },
+            { it===hd720 },
+            retryLearned=true,
+        )
+        assertEquals(listOf(hd720),attempts.map { it.tier })
+        assertTrue(attempts.single().forced)
+    }
+
     @Test fun fallbackOnlyLadderProducesNoPrimaryAttempts() {
         val attempts=primaryPlaybackAttempts(listOf(sdFallback),1080,{ true },{ false })
         assertTrue(attempts.isEmpty())
+    }
+
+    @Test fun twentyFiveFpsUsesFiftyHzDisplayCadence() {
+        assertEquals(50f,targetDisplayRefreshRate(25f))
+        assertEquals(50f,targetDisplayRefreshRate(24f))
+        assertEquals(50f,targetDisplayRefreshRate(50f))
+        assertEquals(listOf(25f,50f),displayRefreshTargets(25f))
+    }
+
+    @Test fun thirtyFpsUsesSixtyHzDisplayCadence() {
+        assertEquals(60f,targetDisplayRefreshRate(30f))
+        assertEquals(60f,targetDisplayRefreshRate(60f))
+        assertEquals(listOf(30f,60f),displayRefreshTargets(30f))
+        assertEquals(listOf(120f),displayRefreshTargets(120f))
+        assertTrue(displayRefreshTargets(0f).isEmpty())
     }
 }

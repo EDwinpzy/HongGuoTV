@@ -48,6 +48,7 @@ internal fun primaryPlaybackAttempts(
     maxQuality: Int,
     supportsTier: (StreamInfo) -> Boolean,
     learnedFailure: (StreamInfo) -> Boolean = { false },
+    retryLearned: Boolean = false,
 ): List<PlaybackAttempt> {
     val primary = ladder.filterNot { it.isFallback }
     fun best(candidates: List<StreamInfo>): StreamInfo? =
@@ -57,7 +58,13 @@ internal fun primaryPlaybackAttempts(
     val supported=primary.filter { supportsTier(it) && (it.qualityValue <= 0 || it.qualityValue <= maxQuality) }
     // Only the no-supported-primary case needs a real best-effort attempt. The
     // website fallback must not make an unsupported primary look "covered".
-    val force=if(supported.isEmpty()) best(primary)?.takeIf { !learnedFailure(it) } else null
+    // An explicit quality change is different: the user asked for that tier, so
+    // try the highest requested primary once even when a stale failure was learned.
+    val force=when {
+        retryLearned -> best(primary)
+        supported.isEmpty() -> best(primary)?.takeIf { !learnedFailure(it) }
+        else -> null
+    }
     return buildList {
         force?.let { add(PlaybackAttempt(it,true)) }
         supported
@@ -85,6 +92,7 @@ internal fun openStream(
     speculative: Boolean = false,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
     learnedFailure: (StreamInfo) -> Boolean = { false },
+    retryLearned: Boolean = false,
 ): OpenedStream? {
     val ladder = repository.playbackTiers(id, maxQuality, type, metadataAhead, speculative)
     Log.i(
@@ -99,7 +107,7 @@ internal fun openStream(
             "${it.quality}/${it.codec}/${it.width}x${it.height}=${supportsTier(it)}"
         },
     )
-    val primaryOrder = primaryPlaybackAttempts(ladder,maxQuality,supportsTier,learnedFailure)
+    val primaryOrder = primaryPlaybackAttempts(ladder,maxQuality,supportsTier,learnedFailure,retryLearned)
     Log.i(
         "HongguoTV",
         "Playback primary order: " + primaryOrder.joinToString {
@@ -184,3 +192,27 @@ internal fun shouldAutoDowngrade(
     currentQuality: Int,
 ): Boolean =
     attempts < maxAttempts && currentQuality > 0 && tiers.any { it.qualityValue in 1 until currentQuality }
+
+/**
+ * Display modes to try, best first. Native cadence wins when the panel exposes it;
+ * otherwise 25/50fps content uses 50Hz and 30/60fps content uses 60Hz to avoid
+ * carrying judder from S621's limited 50/60Hz mode set.
+ */
+internal fun displayRefreshTargets(frameRate: Float): List<Float> {
+    if(!frameRate.isFinite() || frameRate<=0f) return emptyList()
+    val family=when(frameRate) {
+        in 23f..26f -> 50f
+        in 27f..31f -> 60f
+        in 48f..52f -> 50f
+        in 58f..62f -> 60f
+        else -> null
+    }
+    return buildList {
+        add(frameRate)
+        if(family!=null && kotlin.math.abs(family-frameRate)>0.6f) add(family)
+    }
+}
+
+/** Final fallback cadence for tests and callers that only need one target. */
+internal fun targetDisplayRefreshRate(frameRate: Float): Float? =
+    displayRefreshTargets(frameRate).lastOrNull()

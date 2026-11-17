@@ -408,7 +408,7 @@ class PlayerSidebar(
     private fun buildSettings(body: LinearLayout): List<MutableList<View>> {
         val rows = mutableListOf<MutableList<View>>()
         body.addView(label("画面与播放", 11f, goldSoft).apply { setPadding(0, 0, 0, dp(7)) })
-        rows += settingRow(
+        val qualityChoices = settingRow(
             body,
             "清晰度上限",
             PlaybackQuality.options.map { "${it}P" },
@@ -418,6 +418,7 @@ class PlayerSidebar(
             state = state.copy(quality = value)
             setQuality(value)
         }
+        rows += qualityChoices
         rows += settingRow(
             body,
             "倍速",
@@ -500,7 +501,8 @@ class PlayerSidebar(
         actionRow.addView(resetChip, LinearLayout.LayoutParams(0, dp(32), 1f))
         body.addView(actionRow)
         rows += mutableListOf(restartChip, resetChip)
-        firstFocus = rows.firstOrNull()?.firstOrNull()
+        firstFocus = qualityChoices.getOrNull(PlaybackQuality.options.indexOf(state.quality))
+            ?: rows.firstOrNull()?.firstOrNull()
         return rows
     }
 

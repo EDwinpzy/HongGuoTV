@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.graphics.Color
@@ -19,6 +20,8 @@ import android.text.TextUtils
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DecoderReuseEvaluation
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
@@ -48,6 +51,7 @@ class MainActivity: Activity() {
     // Verified-downgrade state (upstream 2026-11-14 capability port): the picked tier,
     // its real coded size from the MP4 header, and the full ladder of this episode.
     private var autoDowngrades=0
+    private var forceBestOnNextPlay=false
     private var attemptedQuality=0
     private var currentTrack: VideoTracks.Track?=null
     private var currentTier: StreamInfo?=null
@@ -63,6 +67,7 @@ class MainActivity: Activity() {
     private var workScope: RequestScope?=null
     private var workJob: java.util.concurrent.Future<*>?=null
     private var playerListener: Player.Listener?=null
+    private var analyticsListener: AnalyticsListener?=null
     private lateinit var playbackTitle: TextView
     private var directPlayback=false
     private var collection: String?=null
@@ -2091,6 +2096,8 @@ class MainActivity: Activity() {
     private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false,autoDowngrade: Boolean=false) {
         updater.interrupt()
         cancelCatalogPrefetch()
+        val forceBest=forceBestOnNextPlay
+        forceBestOnNextPlay=false
         val data=detail ?: return
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
@@ -2200,7 +2207,8 @@ class MainActivity: Activity() {
                     supportsTier={ CodecCapabilities.supports(it) },
                     metadataAhead=ahead,
                     supportsTrack={ it==null || CodecCapabilities.supports(it) },
-                    learnedFailure={ CodecCapabilities.learnedFailure(it) })
+                    learnedFailure={ CodecCapabilities.learnedFailure(it) },
+                    retryLearned=forceBest)
                 ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         }, { opened ->
             val remote=opened.video
@@ -2222,6 +2230,43 @@ class MainActivity: Activity() {
                 }
             }
             p.setPlaybackSpeed(library.playbackSpeed)
+            if(analyticsListener==null) {
+                val analytics=object: AnalyticsListener {
+                    override fun onVideoInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: Format,
+                        decoderReuseEvaluation: DecoderReuseEvaluation?,
+                    ) {
+                        val frameRate=format.frameRate
+                        android.util.Log.i(
+                            "HongguoTV",
+                            "Video input ${format.codecs}/${format.width}x${format.height}@${frameRate}fps",
+                        )
+                        if(frameRate>0f) main.post { applyPlaybackDisplayMode(frameRate) }
+                    }
+                    override fun onVideoFrameProcessingOffset(
+                        eventTime: AnalyticsListener.EventTime,
+                        totalProcessingOffsetUs: Long,
+                        frameCount: Int,
+                    ) {
+                        android.util.Log.i(
+                            "HongguoTV",
+                            "Frame offset us=$totalProcessingOffsetUs frames=$frameCount",
+                        )
+                    }
+                    override fun onDroppedVideoFrames(
+                        eventTime: AnalyticsListener.EventTime,
+                        droppedFrames: Int,
+                        elapsedMs: Long,
+                    ) {
+                        if(droppedFrames>0) {
+                            android.util.Log.w("HongguoTV","Dropped video frames=$droppedFrames elapsedMs=$elapsedMs")
+                        }
+                    }
+                }
+                analyticsListener=analytics
+                p.addAnalyticsListener(analytics)
+            }
             val listener=object: Player.Listener {
                 private fun active()=player===p && generation==ticket && p.currentMediaItem?.mediaId==requestedId
                 override fun onPlaybackStateChanged(state: Int) {
@@ -2261,6 +2306,7 @@ class MainActivity: Activity() {
                         firstFrame=false
                         playbackSpinner?.visibility=View.GONE
                         android.util.Log.i("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
+                        if(!panel) hidePlaybackOverlay()
                     }
                 }
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(hud.visibility==View.VISIBLE) updatePlaybackText(); syncMediaSession() } }
@@ -2286,6 +2332,35 @@ class MainActivity: Activity() {
         if(http==null) return
         // Closing an idle TLS connection can write close_notify; keep it off the UI thread.
         networkCleanup.execute { http.dispatcher.cancelAll(); http.connectionPool.evictAll(); http.dispatcher.executorService.shutdown() }
+    }
+    /**
+     * Match the display cadence to the decoded stream. S621 exposes only 50/60Hz;
+     * 25fps content on 60Hz gets a visible 3:2 cadence judder, while 50Hz is exact.
+     */
+    private fun applyPlaybackDisplayMode(frameRate: Float) {
+        if(screen!="player" || !foreground || player==null || isFinishing || isDestroyed) return
+        val targets=displayRefreshTargets(frameRate)
+        if(targets.isEmpty()) { clearPlaybackDisplayMode(); return }
+        @Suppress("DEPRECATION")
+        val currentDisplay=if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.R) display else windowManager.defaultDisplay
+        val modes=currentDisplay?.supportedModes?.toList().orEmpty()
+        val mode=targets.firstNotNullOfOrNull { target ->
+            modes.filter { kotlin.math.abs(it.refreshRate-target)<=0.6f }
+                .minByOrNull { kotlin.math.abs(it.refreshRate-target) }
+        }
+        if(mode==null) { clearPlaybackDisplayMode(); return }
+        val attrs=window.attributes
+        if(attrs.preferredDisplayModeId==mode.modeId) return
+        attrs.preferredDisplayModeId=mode.modeId
+        window.attributes=attrs
+        android.util.Log.i("HongguoTV","Display mode ${mode.refreshRate}Hz for ${frameRate}fps video")
+    }
+    private fun clearPlaybackDisplayMode() {
+        val attrs=window.attributes
+        if(attrs.preferredDisplayModeId==0) return
+        attrs.preferredDisplayModeId=0
+        window.attributes=attrs
+        android.util.Log.i("HongguoTV","Display mode restored to system default")
     }
     private fun prefetchKey(id: String,quality: Int)="$id:$quality"
     private fun prefetchTargets(data: Detail,index: Int,quality: Int): List<String> =
@@ -2444,6 +2519,13 @@ class MainActivity: Activity() {
         android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else "")+" [$diag]")
         val actions=row(); controls.addView(actions)
         addButton(actions,"立即重试") { playEpisode(episodeIndex,retryPosition,retryAutoplay) }.requestFocus()
+        val learned=CodecCapabilities.learnedCount()
+        if(learned>0) addButton(actions,"重置设备能力记录") {
+            CodecCapabilities.resetLearned()
+            forceBestOnNextPlay=true
+            android.util.Log.i("HongguoTV","Decoder capability lessons reset from playback error ($learned entries)")
+            playEpisode(episodeIndex,retryPosition,retryAutoplay)
+        }
         // The manual button names a REAL lower tier from this episode's ladder (upstream
         // nextLowerQuality). Fall back to 720P only when no ladder was captured (prefetch).
         val lowerTier=if(noPlayableQuality) null else nextLowerQuality(attemptedQuality,currentTiers)
@@ -2729,7 +2811,10 @@ class MainActivity: Activity() {
                 val target=options[index]; val changed=library.maxQuality!=target
                 library.maxQuality=target
                 if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "清晰度上限  ·  ")+"${target}P"
-                if(inPlayer && changed) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
+                if(changed) {
+                    forceBestOnNextPlay=true
+                    if(inPlayer) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
+                }
             })
         dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
         dialog.show()
@@ -2756,7 +2841,7 @@ class MainActivity: Activity() {
             { current,view,located -> tvTools.episodePicker(data.episodes.size,current,view,located) },
             { selected ->
                 if(selected==episodeIndex) playerSidebar?.dismiss()
-                else { resumeOnClose=false; playerSidebar?.dismiss(); playEpisode(selected) }
+                else { resumeOnClose=false; playerSidebar?.dismiss(); playEpisode(selected,autoplay=requestedAutoplay) }
             },
             { value ->
                 library.playbackSpeed=value; player?.setPlaybackSpeed(value); updatePlaybackText()
@@ -2764,10 +2849,11 @@ class MainActivity: Activity() {
             { value ->
                 if(library.maxQuality!=value) {
                     val position=currentPosition()
-                    val autoplay=player?.playWhenReady ?: requestedAutoplay
+                    val autoplay=requestedAutoplay
                     resumeOnClose=false
                     playerSidebar?.dismiss()
                     library.maxQuality=value
+                    forceBestOnNextPlay=true
                     playEpisode(episodeIndex,position,autoplay)
                 }
             },
@@ -2799,6 +2885,7 @@ class MainActivity: Activity() {
                 playerSidebar?.dismiss()
                 seekTo(0)
                 hidePlaybackOverlay()
+                requestPlayback(true)
             },
             {
                 val count=CodecCapabilities.learnedCount()
@@ -2831,11 +2918,13 @@ class MainActivity: Activity() {
     }
     private fun releasePlayer() {
         cancelRecovery(); cancelPrefetch(); mediaSession.deactivate(); tvTools.close()
+        clearPlaybackDisplayMode()
         val wasForeground=foreground; foreground=false
         val oldPanel=playerSidebar; playerSidebar=null; oldPanel?.dismiss(); foreground=wasForeground
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
+        analyticsListener?.let { player?.removeAnalyticsListener(it) }; analyticsListener=null
         video?.close(); video=null; playerView?.player=null; playerView=null; stopDanmakuFetch(); danmakuOverlay?.shutdown(); danmakuOverlay=null; player?.release(); player=null; playbackReady=false; playbackSpinner=null; transportPlay=null; sleepButton=null
         closeTransport(playbackHttp); playbackHttp=null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
