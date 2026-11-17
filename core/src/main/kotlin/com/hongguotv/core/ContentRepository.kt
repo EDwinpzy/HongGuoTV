@@ -137,6 +137,8 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     // ---------- catalog (App landpage) ----------
 
     private val catalogCursors = linkedMapOf<String, Pair<Int,String>>() // genre key -> (offset, session)
+    private var recommendationFeed: RecommendationFeed? = null
+    private var recommendationIdentity = ""
 
     private fun card(item: JSONObject): Series {
         val o = if (item.optJSONObject("video_data") != null) item.optJSONObject("video_data")!! else item
@@ -171,6 +173,44 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         // the home recommendation shelves.
         return ThemeCategory.parse(webText("$site/category/${categoryPath(type)}?page=$page"),page,
             Theme("all","全部"),type)
+    }
+
+    /**
+     * Recommendation tab. A verified account uses the official account feed; a guest
+     * gets a mixed popular feed so the tab is useful before login.
+     */
+    @Synchronized
+    fun recommendations(
+        page: Int = 1,
+        account: AccountCredentials? = null,
+        identity: String = "",
+    ): CatalogPage {
+        if (account == null) return popularRecommendations(page)
+        val feed = recommendationFeed?.takeIf { recommendationIdentity == identity }
+            ?: RecommendationFeed(http, account, clock = clock).also {
+                recommendationFeed = it
+                recommendationIdentity = identity
+            }
+        return feed.page(page)
+    }
+
+    @Synchronized
+    fun resetRecommendations() {
+        recommendationFeed = null
+        recommendationIdentity = ""
+    }
+
+    private fun popularRecommendations(page: Int): CatalogPage {
+        val feeds = listOf(
+            home(page, ContentType.SHORT),
+            home(page, ContentType.COMIC),
+            home(page, ContentType.AI),
+        )
+        val size = feeds.maxOfOrNull { it.items.size } ?: 0
+        val items = (0 until size).flatMap { index ->
+            feeds.mapNotNull { it.items.getOrNull(index) }
+        }.distinctBy { it.id }
+        return CatalogPage(items, feeds.any { it.hasMore })
     }
 
     /** One landpage feed page.
