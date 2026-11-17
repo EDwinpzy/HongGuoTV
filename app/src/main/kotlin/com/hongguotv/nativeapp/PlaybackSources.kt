@@ -37,6 +37,42 @@ internal class NoPlayableQualityException :
 private val betterTier =
     compareBy<StreamInfo> { it.qualityValue }
         .thenBy { if (it.codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")) 1 else 0 }
+private val bestFirstTier =
+    compareByDescending<StreamInfo> { it.qualityValue }
+        .thenByDescending { if (it.codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")) 1 else 0 }
+
+internal data class PlaybackAttempt(val tier: StreamInfo,val forced: Boolean)
+
+internal fun primaryPlaybackAttempts(
+    ladder: List<StreamInfo>,
+    maxQuality: Int,
+    supportsTier: (StreamInfo) -> Boolean,
+    learnedFailure: (StreamInfo) -> Boolean = { false },
+    retryLearned: Boolean = false,
+): List<PlaybackAttempt> {
+    val primary = ladder.filterNot { it.isFallback }
+    fun best(candidates: List<StreamInfo>): StreamInfo? =
+        candidates.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
+            ?: candidates.filter { it.qualityValue <= 0 }.maxWithOrNull(betterTier)
+            ?: candidates.minWithOrNull(betterTier)
+    val supported=primary.filter { supportsTier(it) && (it.qualityValue <= 0 || it.qualityValue <= maxQuality) }
+    // Only the no-supported-primary case needs a real best-effort attempt. The
+    // website fallback must not make an unsupported primary look "covered".
+    // An explicit quality change is different: the user asked for that tier, so
+    // try the highest requested primary once even when a stale failure was learned.
+    val force=when {
+        retryLearned -> best(primary)
+        supported.isEmpty() -> best(primary)?.takeIf { !learnedFailure(it) }
+        else -> null
+    }
+    return buildList {
+        force?.let { add(PlaybackAttempt(it,true)) }
+        supported
+            .sortedWith(bestFirstTier)
+            .filterNot { it === force }
+            .forEach { add(PlaybackAttempt(it,false)) }
+    }
+}
 
 /**
  * Opens the first tier the device can ACTUALLY decode (upstream openStream, 2026-11-14
@@ -55,39 +91,38 @@ internal fun openStream(
     metadataAhead: List<String> = emptyList(),
     speculative: Boolean = false,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
+    learnedFailure: (StreamInfo) -> Boolean = { false },
+    retryLearned: Boolean = false,
 ): OpenedStream? {
     val ladder = repository.playbackTiers(id, maxQuality, type, metadataAhead, speculative)
     Log.i(
         "HongguoTV",
         "Playback ladder: " + ladder.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" },
     )
-    val pool = ladder.filter(supportsTier)
+    val primary = ladder.filterNot { it.isFallback }
+    val fallback = ladder.filter { it.isFallback }
     Log.i(
         "HongguoTV",
         "Playback candidates: " + ladder.joinToString {
             "${it.quality}/${it.codec}/${it.width}x${it.height}=${supportsTier(it)}"
         },
     )
-    // When every tier is blocked (a single-1080P episode whose HEVC decoder already
-    // failed, or an over-strict static probe), still try the best effort once: a
-    // hard refusal leaves no way to watch that episode at all. Multi-tier ladders
-    // keep their learned downgrade because `pool` is not empty for them.
-    val forcedAttempt = pool.isEmpty()
-    val attemptPool = pool.ifEmpty { ladder }
-    val pick =
-        attemptPool.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
-            ?: attemptPool.filter { it.qualityValue <= 0 }.maxWithOrNull(betterTier)
-            ?: attemptPool.minWithOrNull(betterTier)
-            ?: return null
-    Log.i("HongguoTV", "Playback pick: ${pick.quality}/${pick.codec}/${pick.width}x${pick.height}")
-    val alternates = attemptPool.filter { it !== pick && it.qualityValue <= pick.qualityValue }
-        .sortedWith(betterTier.reversed())
-    for (tier in listOf(pick) + alternates) {
+    val primaryOrder = primaryPlaybackAttempts(ladder,maxQuality,supportsTier,learnedFailure,retryLearned)
+    Log.i(
+        "HongguoTV",
+        "Playback primary order: " + primaryOrder.joinToString {
+            "${it.tier.quality}/${it.tier.codec}/${it.tier.width}x${it.tier.height}" +
+                if (it.forced) "(best effort)" else ""
+        },
+    )
+    var lastError: Exception? = null
+    for ((tier,forced) in primaryOrder) {
         val video = RemoteVideo(http, tier)
         try {
             Log.i(
                 "HongguoTV",
-                "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}",
+                "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}" +
+                    if (forced) " (best effort)" else "",
             )
             video.prepare()
             val track = video.trackInfo()
@@ -96,16 +131,14 @@ internal fun openStream(
                 "Playback track: ${track?.fourcc}/${track?.width}x${track?.height} " +
                     "supported=${supportsTrack(track)}",
             )
-            // `supportsTier` and `supportsTrack` consult the same learned-failure
-            // store. When every tier is blocked, using that store again here would
-            // turn the best-effort fallback into another immediate refusal. Let the
-            // selected best tier reach ExoPlayer once; a real decoder failure will
-            // still surface through playerFailure instead of NoPlayableQuality.
-            if (forcedAttempt || supportsTrack(track)) {
+            // A requested primary tier gets one real ExoPlayer attempt even when the
+            // static probe rejects its portrait geometry. Learned runtime failures are
+            // excluded above, so this cannot loop on a tier the box already proved bad.
+            if (forced || supportsTrack(track)) {
                 Log.i(
                     "HongguoTV",
                     "Playback selected: ${tier.quality}/${tier.codec}/${track?.width}x${track?.height}" +
-                        if (forcedAttempt) " (forced best effort)" else "",
+                        if (forced) " (forced best effort)" else "",
                 )
                 return OpenedStream(video, tier, ladder, track)
             }
@@ -116,10 +149,34 @@ internal fun openStream(
             video.close()
         } catch (error: Exception) {
             video.close()
-            throw error
+            lastError = error
+            Log.w("HongguoTV", "Playback tier failed: ${tier.quality}/${tier.codec}: ${error.message}")
         }
     }
-    if (ladder.isNotEmpty()) throw NoPlayableQualityException()
+    // The website fallback is a continuation source, never proof that the signed
+    // primary ladder failed capability checks. Only reach it after every primary
+    // candidate was attempted.
+    for (tier in fallback.sortedWith(bestFirstTier)) {
+        val video = RemoteVideo(http, tier)
+        try {
+            Log.i("HongguoTV", "Playback fallback trying: ${tier.quality}/${tier.width}x${tier.height}")
+            video.prepare()
+            val track = video.trackInfo()
+            if (supportsTrack(track)) {
+                Log.i("HongguoTV", "Playback fallback selected: ${tier.quality}/${track?.width}x${track?.height}")
+                return OpenedStream(video, tier, ladder, track)
+            }
+            video.close()
+        } catch (error: Exception) {
+            video.close()
+            lastError = error
+            Log.w("HongguoTV", "Playback fallback failed: ${tier.quality}: ${error.message}")
+        }
+    }
+    if (ladder.isNotEmpty()) {
+        if (lastError != null && primary.isEmpty()) throw lastError
+        throw NoPlayableQualityException()
+    }
     return null
 }
 
@@ -135,3 +192,27 @@ internal fun shouldAutoDowngrade(
     currentQuality: Int,
 ): Boolean =
     attempts < maxAttempts && currentQuality > 0 && tiers.any { it.qualityValue in 1 until currentQuality }
+
+/**
+ * Display modes to try, best first. Native cadence wins when the panel exposes it;
+ * otherwise 25/50fps content uses 50Hz and 30/60fps content uses 60Hz to avoid
+ * carrying judder from S621's limited 50/60Hz mode set.
+ */
+internal fun displayRefreshTargets(frameRate: Float): List<Float> {
+    if(!frameRate.isFinite() || frameRate<=0f) return emptyList()
+    val family=when(frameRate) {
+        in 23f..26f -> 50f
+        in 27f..31f -> 60f
+        in 48f..52f -> 50f
+        in 58f..62f -> 60f
+        else -> null
+    }
+    return buildList {
+        add(frameRate)
+        if(family!=null && kotlin.math.abs(family-frameRate)>0.6f) add(family)
+    }
+}
+
+/** Final fallback cadence for tests and callers that only need one target. */
+internal fun targetDisplayRefreshRate(frameRate: Float): Float? =
+    displayRefreshTargets(frameRate).lastOrNull()

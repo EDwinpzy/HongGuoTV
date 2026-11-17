@@ -22,6 +22,9 @@ import com.hongguotv.core.VideoTracks
  * re-probe after a firmware/decoder change.
  */
 object CodecCapabilities {
+    private const val STORE = "native-decoder-lessons-v1"
+    /** v2 validates coded sizes and must not inherit v1's over-eager failures. */
+    private const val SCHEMA = 2
     private val lessons = DecoderLessons()
     private var prefs: SharedPreferences? = null
     private val verdicts = HashMap<String, Boolean>()
@@ -29,9 +32,19 @@ object CodecCapabilities {
 
     fun init(context: Context) {
         if (prefs != null) return
-        val store = context.getSharedPreferences("native-decoder-lessons-v1", Context.MODE_PRIVATE)
+        val store = context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
         prefs = store
-        lessons.restore(store.getStringSet("failures", emptySet()) ?: emptySet())
+        if (store.getInt("schema", 1) < SCHEMA) {
+            // v1 could remember a failure from a transient probe/stream and then
+            // permanently reject every higher tier (e.g. 1080P fell back to 360P).
+            // Relearn from real playback after the upgrade instead.
+            val dropped = store.getStringSet("failures", emptySet())?.size ?: 0
+            store.edit().remove("failures").putInt("schema", SCHEMA).apply()
+            lessons.reset()
+            android.util.Log.i("HongguoTV", "Decoder capability store migrated to schema $SCHEMA (dropped $dropped legacy failures)")
+        } else {
+            lessons.restore(store.getStringSet("failures", emptySet()) ?: emptySet())
+        }
     }
 
     fun mime(codec: String): String? =
@@ -64,6 +77,10 @@ object CodecCapabilities {
 
     fun supports(track: VideoTracks.Track) = supports(track.fourcc, track.width, track.height)
 
+    /** Runtime-observed failures only; used to avoid re-forcing a tier that really failed. */
+    fun learnedFailure(info: StreamInfo) = lessons.fails(info.codec, info.width, info.height)
+    fun learnedFailure(track: VideoTracks.Track) = lessons.fails(track.fourcc, track.width, track.height)
+
     /**
      * Records a runtime decode failure; true when the static probe had claimed support
      * (over-reporting). The learned key is codec + coded size when known, so only the
@@ -72,7 +89,7 @@ object CodecCapabilities {
     fun learnFailure(codec: String, width: Int?, height: Int?): Boolean {
         val overReported = supports(codec, width, height)
         val key = lessons.remember(codec, width, height) ?: return false
-        prefs?.edit()?.putStringSet("failures", lessons.keys())?.apply()
+        prefs?.edit()?.putInt("schema", SCHEMA)?.putStringSet("failures", lessons.keys())?.apply()
         android.util.Log.w("HongguoTV", "Learned decoder failure $key (static probe claimed support: $overReported)")
         return overReported
     }
@@ -81,7 +98,7 @@ object CodecCapabilities {
     fun resetLearned() {
         lessons.reset()
         synchronized(verdicts) { verdicts.clear() }
-        prefs?.edit()?.putStringSet("failures", lessons.keys())?.apply()
+        prefs?.edit()?.putInt("schema", SCHEMA)?.putStringSet("failures", lessons.keys())?.apply()
     }
 
     fun learnedCount() = lessons.size()

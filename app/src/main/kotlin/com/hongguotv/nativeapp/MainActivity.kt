@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import android.app.Activity
 import android.app.AlertDialog
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.graphics.Color
@@ -19,6 +20,8 @@ import android.text.TextUtils
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DecoderReuseEvaluation
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
@@ -33,6 +36,9 @@ class MainActivity: Activity() {
     private val repository=ContentRepository()
     private val networkCleanup=Executors.newSingleThreadExecutor()
     private val prefetchWorker=Executors.newSingleThreadExecutor()
+    private val catalogPrefetchWorker=Executors.newSingleThreadExecutor()
+    private var catalogPrefetchJob: java.util.concurrent.Future<*>?=null
+    private var catalogPrefetchEpoch=0
     private var playbackHttp: okhttp3.OkHttpClient?=null
     private class PreparedEpisode(val opened: OpenedStream,val http: okhttp3.OkHttpClient)
     private val preparedEpisodes=linkedMapOf<String,PreparedEpisode>()
@@ -45,6 +51,7 @@ class MainActivity: Activity() {
     // Verified-downgrade state (upstream 2026-11-14 capability port): the picked tier,
     // its real coded size from the MP4 header, and the full ladder of this episode.
     private var autoDowngrades=0
+    private var forceBestOnNextPlay=false
     private var attemptedQuality=0
     private var currentTrack: VideoTracks.Track?=null
     private var currentTier: StreamInfo?=null
@@ -60,6 +67,7 @@ class MainActivity: Activity() {
     private var workScope: RequestScope?=null
     private var workJob: java.util.concurrent.Future<*>?=null
     private var playerListener: Player.Listener?=null
+    private var analyticsListener: AnalyticsListener?=null
     private lateinit var playbackTitle: TextView
     private var directPlayback=false
     private var collection: String?=null
@@ -147,7 +155,7 @@ class MainActivity: Activity() {
     private val favoriteBadges=mutableMapOf<String,TextView>()
     private var favoriteStatus: TextView?=null
     private var favoriteCheck: TextView?=null
-    private var episodePanel: EpisodePanel?=null
+    private var playerSidebar: PlayerSidebar?=null
     private val recovery=RecoveryBudget()
     private var retryPending=false
     private var autoRecovery=false
@@ -246,7 +254,7 @@ class MainActivity: Activity() {
     private var player: ExoPlayer?=null
     private var video: RemoteVideo?=null
     private var playbackReady=false
-    private var playbackSpinner: ProgressBar?=null
+    private var playbackSpinner: View?=null
     private var pausedForLifecycle=false
     private lateinit var hud: LinearLayout
     private lateinit var playbackText: TextView
@@ -349,11 +357,11 @@ class MainActivity: Activity() {
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback); networkRegistered=true }
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
-        message(base(),"正在读取本机记录…")
+        message(base(),"正在读取本机记录…",loading=true)
         loadLibrary()
     }
     private fun showLibraryError(problem: Throwable) {
-        val body=base(); error(body,problem) { message(base(),"正在读取本机记录…"); loadLibrary() }
+        val body=base(); error(body,problem) { message(base(),"正在读取本机记录…",loading=true); loadLibrary() }
     }
     private fun loadLibrary() {
         libraryLoadError=null
@@ -363,6 +371,39 @@ class MainActivity: Activity() {
             // App start: the first screen is the home tab with focus on the top nav "首页".
             if(!isDestroyed && foreground) { showCatalog(load=true,focusNav=true); favoriteMonitor.check() }
         }
+    }
+    /**
+     * Warm the tabs that used to show a full-screen spinner. This never touches the
+     * current request lane, never blocks first paint, and stores the same page-1 cache
+     * that a tab read consumes.
+     */
+    private fun prefetchCatalogSilently() {
+        if(catalogPrefetchJob?.isDone==false) return
+        val epoch=++catalogPrefetchEpoch
+        catalogPrefetchJob=catalogPrefetchWorker.submit {
+            val types=listOf(ContentType.SHORT,ContentType.COMIC,ContentType.AI)
+            for(type in types) {
+                if(Thread.currentThread().isInterrupted) return@submit
+                val themes=runCatching { repository.themes(type) }.getOrNull() ?: continue
+                main.post {
+                    if(epoch==catalogPrefetchEpoch && foreground) themesByType[type]=themes
+                }
+            }
+            if(Thread.currentThread().isInterrupted) return@submit
+            val board=library.rankBoard
+            runCatching { repository.ranking(board,1) }.getOrNull()?.let { page ->
+                val cached=CatalogState(1,page.items,page.hasMore,page.ranking)
+                main.post {
+                    if(epoch!=catalogPrefetchEpoch || isDestroyed) return@post
+                    catalogCache["rank:${board.storedValue}"]=System.currentTimeMillis() to cached
+                }
+            }
+        }
+    }
+    private fun cancelCatalogPrefetch() {
+        catalogPrefetchEpoch++
+        catalogPrefetchJob?.cancel(true)
+        catalogPrefetchJob=null
     }
     private fun base(title: String?=null): LinearLayout {
         root.removeAllViews(); root.background=TvStyle.backdrop()
@@ -441,13 +482,7 @@ class MainActivity: Activity() {
     private fun showLoading() {
         if(isFinishing || isDestroyed) return
         loadingOverlay?.let { root.removeView(it) }
-        val overlay=FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK); isClickable=true; isFocusable=true
-            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleLarge).apply {
-                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-            },FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
-        }
+        val overlay=TvLoadingUi.overlay(this)
         root.addView(overlay,FrameLayout.LayoutParams(-1,-1))
         loadingOverlay=overlay; overlay.requestFocus()
     }
@@ -455,18 +490,16 @@ class MainActivity: Activity() {
         loadingOverlay?.let { root.removeView(it) }
         loadingOverlay=null
     }
-    private fun inlineLoading(): View = FrameLayout(this).apply {
-        addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleSmall).apply {
-            indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-        },FrameLayout.LayoutParams(dp(24),dp(24),Gravity.CENTER))
+    private fun inlineLoading(): View = TvLoadingUi.inline(this,"正在加载更多").apply {
+        layoutParams=lp(-1,dp(48))
     }
-    private fun message(parent: LinearLayout,label: String) {
-        if(label.contains("正在") || label.contains("加载")) { showLoading(); return }
+    private fun message(parent: LinearLayout,label: String,loading: Boolean=false) {
         val panel=column().apply {
             setPadding(dp(24),dp(18),dp(24),dp(18)); background=TvStyle.panel(this@MainActivity,22)
             gravity=Gravity.CENTER_HORIZONTAL
         }
-        panel.addView(text(label,16f,muted).apply { gravity=Gravity.CENTER; setLineSpacing(0f,1.2f) },lp(-1,-2))
+        if(loading) panel.addView(TvLoadingUi.inline(this,label))
+        else panel.addView(text(label,16f,muted).apply { gravity=Gravity.CENTER; setLineSpacing(0f,1.2f) },lp(-1,-2))
         parent.addView(panel,lp(-1,-2).apply { topMargin=dp(14); bottomMargin=dp(10) })
     }
     private fun error(parent: LinearLayout,problem: Throwable,retry: ()->Unit) {
@@ -485,8 +518,12 @@ class MainActivity: Activity() {
     /** Theme list for the current content type: session cache first, then repository. */
     private fun themesFor(type: ContentType): List<Theme> {
         themesByType[type]?.let { return it }
-        val themes=runCatching { repository.themes(type) }.getOrDefault(emptyList())
-        if(themes.isNotEmpty()) themesByType[type]=themes
+        // This is called while the catalog layout is built on the UI thread. The old
+        // synchronous repository.themes() could block for the HTTP retry budget (45s)
+        // and make a tab look frozen. Use a disk/session cache or the built-in strip;
+        // the dedicated startup worker refreshes the live list silently.
+        val themes=repository.cachedThemes(type) ?: repository.fallbackThemes(type)
+        themesByType[type]=themes
         return themes
     }
     private fun switchTheme(slug: String) {
@@ -759,7 +796,7 @@ class MainActivity: Activity() {
                 textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
             }
             container.addView(heading)
-            rankSubtitle=text(if(fetch) "正在读取最新榜单…" else ranking?.updatedText?.ifBlank { "来源：红果${library.rankBoard.label}" } ?: "来源：红果${library.rankBoard.label}",12.5f,muted)
+            rankSubtitle=text(if(fetch) "来源：红果${library.rankBoard.label}" else ranking?.updatedText?.ifBlank { "来源：红果${library.rankBoard.label}" } ?: "来源：红果${library.rankBoard.label}",12.5f,muted)
                 .apply { setPadding(0,0,0,dp(8)) }
             container.addView(rankSubtitle)
             nav.forEach { it.nextFocusDownId=rankButtons[current]?.id ?: rankRefresh!!.id }
@@ -821,7 +858,7 @@ class MainActivity: Activity() {
         if(fetch) {
             if(tab==0 || tab==1 || tab==2 || tab==3) catalogGrid(body,focusNav,focusType,loading=true)
             else {
-                message(body,"正在加载…")
+                body.addView(TvLoadingUi.catalogPlaceholder(this,if(tab==5) "正在同步" else "正在加载",2))
                 // Board switch: focus the freshly selected board button while loading.
                 if(focusType) rankButtons[rankFocusBoard ?: library.rankBoard]?.requestFocus() ?: nav[tab].requestFocus()
                 else nav[tab].requestFocus()
@@ -869,7 +906,18 @@ class MainActivity: Activity() {
                     }
                     if(requestTab==0) homeFetchedAt=System.currentTimeMillis()
                     when(requestTab) {
-                        0 -> { library.cacheHome(ContentType.SHORT,shortResult.items,shortResult.hasMore); library.cacheHome(ContentType.COMIC,comicResult.items,comicResult.hasMore); library.cacheHome(ContentType.AI,aiResult.items,aiResult.hasMore) }
+                        0 -> {
+                            library.cacheHome(ContentType.SHORT,shortResult.items,shortResult.hasMore)
+                            library.cacheHome(ContentType.COMIC,comicResult.items,comicResult.hasMore)
+                            library.cacheHome(ContentType.AI,aiResult.items,aiResult.hasMore)
+                            // The home request already fetched all three page-1 feeds;
+                            // hand them to their tabs so the first tab visit paints from
+                            // memory instead of showing a loading surface.
+                            catalogCache["short"]=System.currentTimeMillis() to CatalogState(1,shortResult.items,shortResult.hasMore,shortResult.ranking)
+                            catalogCache["comic"]=System.currentTimeMillis() to CatalogState(1,comicResult.items,comicResult.hasMore,comicResult.ranking)
+                            catalogCache["ai"]=System.currentTimeMillis() to CatalogState(1,aiResult.items,aiResult.hasMore,aiResult.ranking)
+                            prefetchCatalogSilently()
+                        }
                         1 -> if(requestThemeObj==null) library.cacheHome(ContentType.SHORT,shortResult.items,shortResult.hasMore)
                         2 -> if(requestThemeObj==null) library.cacheHome(ContentType.COMIC,comicResult.items,comicResult.hasMore)
                         3 -> if(requestThemeObj==null) library.cacheHome(ContentType.AI,aiResult.items,aiResult.hasMore)
@@ -901,13 +949,22 @@ class MainActivity: Activity() {
                     homeScreen?.refresh?.setOnClickListener { showCatalog(true) }
                     return@work
                 }
-                catalog=emptyList(); hasMore=false; ranking=null
-                if(requestTab==5) rankSubtitle?.text="榜单加载失败" else tabSubtitle?.text="内容加载失败"
+                if(requestTab==5) rankSubtitle?.text="榜单加载失败" else tabSubtitle?.text="内容更新失败，显示上次内容"
                 if(problem is SearchSessionExpiredException) {
+                    catalog=emptyList(); hasMore=false; ranking=null
                     page=1; catalogFocus=""
                     Toast.makeText(this,"搜索结果已过期，已回到第 1 页刷新",Toast.LENGTH_LONG).show()
                     showCatalog(true)
+                } else if(requestTab in 1..5 && catalog.isNotEmpty()) {
+                    // Keep the cached grid on screen: a failed background refresh must
+                    // not erase content that is already usable.
+                    val keepNav=nav.any { it.hasFocus() }
+                    val keepType=rankButtons.values.any { it.hasFocus() } || rankFocusBoard!=null
+                    val keepTheme=themeFocusSlug!=null || themeButtons.values.any { it.hasFocus() }
+                    body.removeAllViews()
+                    catalogGrid(body,keepNav || focusNav,keepType || focusType || keepTheme)
                 } else {
+                    catalog=emptyList(); hasMore=false; ranking=null
                     body.removeAllViews()
                     error(body,problem) { showCatalog(true) }
                 }
@@ -943,9 +1000,13 @@ class MainActivity: Activity() {
         var restoringScroll=true
         val displayed=if(localCatalog()) catalog.take(page*pageSize) else if(tab==1 || tab==2 || tab==3 || tab==5) catalog else if(tab==0) catalog.filterNot { it.id in library.hidden() } else catalog.take(30)
         if(displayed.isEmpty()) {
-            message(list,if(loading) "正在加载推荐…" else when(tab) { 4 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 6 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 7 -> "播放过的剧集会自动保存在这里"; 8 -> if(cloudAccount.signedIn) "手机端暂无预约，在手机红果 App 里预约的剧会出现在这里" else "登录红果账号后，这里会显示手机端的预约"; else -> "本页没有更多内容" })
-            if(tab==0 && page>1) addButton(list,"上一页") { page--; showCatalog(!localCatalog()) }
-            if(tab==0 && hasMore) addButton(list,"下一页") { page++; showCatalog(!localCatalog()) }
+            if(loading) {
+                list.addView(TvLoadingUi.catalogPlaceholder(this,if(tab==0) "正在加载推荐" else "正在加载",2))
+            } else {
+                message(list,when(tab) { 4 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 6 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 7 -> "播放过的剧集会自动保存在这里"; 8 -> if(cloudAccount.signedIn) "手机端暂无预约，在手机红果 App 里预约的剧会出现在这里" else "登录红果账号后，这里会显示手机端的预约"; else -> "本页没有更多内容" })
+                if(tab==0 && page>1) addButton(list,"上一页") { page--; showCatalog(!localCatalog()) }
+                if(tab==0 && hasMore) addButton(list,"下一页") { page++; showCatalog(!localCatalog()) }
+            }
             if(themeFocusSlug!=null) { val slug=themeFocusSlug; themeFocusSlug=null; themeButtons[slug]?.requestFocus() ?: nav[tab].requestFocus() }
             // Focus already sits on a theme button (empty theme result): leave it there.
             else if((tab==1 || tab==2 || tab==3) && themeButtons.values.any { it.hasFocus() }) Unit
@@ -1230,17 +1291,24 @@ class MainActivity: Activity() {
         }
     }
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
-        if(loading && homeShort.isEmpty() && homeComic.isEmpty() && homeAi.isEmpty()) {
-            showLoading(); return
-        }
         homeUpdateCount=library.updatedFavorites()
         selectionPreview=null
+        val shelves=homeShelves()
+        if(loading && shelves.none { it.entries.isNotEmpty() || it.more!=null }) {
+            body.addView(
+                TvLoadingUi.catalogPlaceholder(this,"正在加载首页内容",2),
+                lp(-1,0).apply { weight=1f },
+            )
+            nav.forEach { it.nextFocusDownId=it.id }
+            if(focusNav) nav[0].requestFocus()
+            return
+        }
         val top=nav[0]
         val home=HomeScreen(this,top,::loadCover,{ _, _ -> },
             { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it },
             null)
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
-        home.render(homeShelves(),catalogFocus,!focusNav && !focusType,null,homePosition)
+        home.render(shelves,catalogFocus,!focusNav && !focusType,null,homePosition)
         home.refresh.text=if(loading) if(homeFromCache) "已显示上次内容 · 正在更新热门…" else "正在更新热门…" else "刷新热门"
         home.refresh.setOnClickListener { invalidateCatalogCache(); showCatalog(true) }
         nav.forEach { it.nextFocusDownId=home.firstId() }
@@ -1368,7 +1436,7 @@ class MainActivity: Activity() {
         heading(playback,"播放偏好")
         heading(device,"片单与设备")
         lateinit var qualityButton: TextView
-        qualityButton=setting(playback,"默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
+        qualityButton=setting(playback,"清晰度上限  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
         lateinit var defaultSpeed: TextView
         defaultSpeed=setting(playback,"默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
         lateinit var frame: TextView
@@ -1756,9 +1824,7 @@ class MainActivity: Activity() {
             // Keep the search panel usable while waiting. A full-screen overlay would
             // take focus; removing it when the reply lands hands focus back to the top
             // nav, and the nav's focus listener immediately switches to 首页.
-            tvResultList?.addView(text("正在搜索…",14f,muted).apply {
-                setPadding(dp(4),dp(12),0,dp(12))
-            })
+            tvResultList?.addView(TvLoadingUi.catalogPlaceholder(this,"正在搜索",2))
         } finally { rebuildingGrid=false }
         // The panel just switched from GONE to VISIBLE, so its width is not measured yet.
         // Re-layout now so renderTvResults() can read the real panel width for card sizing.
@@ -1811,7 +1877,7 @@ class MainActivity: Activity() {
         }
         pendingDetail=series; detailAutoplay=autoplay
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; relatedSeasons=null
-        val body=base(series.title); message(body,"正在加载剧集…")
+        val body=base(series.title); body.addView(TvLoadingUi.detailPlaceholder(this,"正在加载剧集"))
         work({ repository.detail(series.id,tabContentType()) }, { result ->
             detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
             val progress=library.progress(series.id)
@@ -2027,6 +2093,9 @@ class MainActivity: Activity() {
     }
     private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false,autoDowngrade: Boolean=false) {
         updater.interrupt()
+        cancelCatalogPrefetch()
+        val forceBest=forceBestOnNextPlay
+        forceBestOnNextPlay=false
         val data=detail ?: return
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
@@ -2037,12 +2106,18 @@ class MainActivity: Activity() {
         val prepared=if(!recovering) preparedEpisodes.remove(selectedKey) else null
         val prefetched=prepared?.opened
         saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews()
+        // Episode switches keep the current decoder and its last rendered frame alive
+        // until the next source is ready. Stopping the player up-front was the source
+        // of the black screen between episodes.
+        var previousVideo: RemoteVideo?=null
+        var previousHttp: okhttp3.OkHttpClient?=null
         if(reuse) {
             cancelRecovery(); tvTools.close()
-            episodePanel?.dismiss(); episodePanel=null; speedDialog?.dismiss(); speedDialog=null
+            playerSidebar?.dismiss(); playerSidebar=null; speedDialog?.dismiss(); speedDialog=null
             playerListener?.let { player?.removeListener(it) }; playerListener=null
-            player?.stop(); player?.clearMediaItems()
-            video?.close(); video=null; closeTransport(playbackHttp); playbackHttp=null
+            player?.pause()
+            previousVideo=video; video=null
+            previousHttp=playbackHttp; playbackHttp=null
             main.removeCallbacks(seekRunnable); pendingSeek=null
         } else releasePlayer()
         artwork.cancelPage(clearMemory=true)
@@ -2063,46 +2138,49 @@ class MainActivity: Activity() {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
             val view=(layoutInflater.inflate(R.layout.tv_player_texture_view,root,false) as PlayerView).apply {
                 useController=false; resizeMode=frameResizeMode(); isFocusable=false
-                setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
             }
             playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
             if(library.danmaku) {
                 danmakuOverlay=DanmakuOverlay(this).apply { restyle(currentDanmakuParams()) }
                 root.addView(danmakuOverlay,danmakuLayoutParams())
             }
-            playbackSpinner=ProgressBar(this,null,android.R.attr.progressBarStyleLarge).apply {
-                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-                importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            }
-            root.addView(playbackSpinner,FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
+            playbackSpinner=TvLoadingUi.player(this)
+            root.addView(playbackSpinner,FrameLayout.LayoutParams(dp(58),dp(38),Gravity.CENTER))
             hud=column().apply {
-                setPadding(dp(widthDp()*.035f),dp(14),dp(widthDp()*.035f),dp(16)); background=TvStyle.playerShade()
+                setPadding(dp(widthDp()*.042f),dp(18),dp(widthDp()*.042f),dp(22)); background=TvStyle.playerShade()
                 visibility=View.GONE
             }
             val titleRow=row()
-            playbackTitle=text("",22f).apply {
+            playbackTitle=text("",25f).apply {
                 maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=TvStyle.titleTypeface(); letterSpacing=(-.02f)
             }
             titleRow.addView(playbackTitle,lp(0,-2).apply { weight=1f })
-            episodeBadge=text("",11.5f,white).apply {
+            episodeBadge=text("",11.5f,TvStyle.playerAccent).apply {
                 typeface=TvStyle.typeface(true)
-                setPadding(dp(10),dp(4),dp(10),dp(4)); background=TvStyle.chip(this@MainActivity,accented=true)
+                setPadding(dp(10),dp(4),dp(10),dp(4)); background=TvStyle.playerChip(this@MainActivity)
             }
             titleRow.addView(episodeBadge,lp().apply { width=LinearLayout.LayoutParams.WRAP_CONTENT; leftMargin=dp(12) })
             hud.addView(titleRow)
-            playbackText=text("",12.5f,muted).apply { setPadding(0,dp(6),0,dp(6)) }; hud.addView(playbackText)
+            playbackText=text("",12.5f,Color.argb(225,244,239,228)).apply { setPadding(0,dp(8),0,dp(8)) }; hud.addView(playbackText)
             progressBar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply {
                 max=1000; progressDrawable=getDrawable(com.hongguotv.nativeapp.R.drawable.tv_progress)
-            }; hud.addView(progressBar,lp(-1,dp(6)))
+            }; hud.addView(progressBar,lp(-1,dp(5)))
             controls=column().apply {
-                setPadding(0,dp(8),0,0)
+                setPadding(0,dp(12),0,0)
                 visibility=View.GONE
             }; hud.addView(controls,lp(-1,-2))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         }
         playbackTitle.text=data.series.title
         episodeBadge.text="第 ${episodeIndex+1} 集 / ${data.episodes.size}"
-        playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
+        playbackText.text=if(reuse) "正在准备第 ${episodeIndex+1} 集…" else "正在获取播放地址…"
+        progressBar.progress=0; progressBar.visibility=View.VISIBLE
+        if(reuse) {
+            showHud(); playbackSpinner?.visibility=View.GONE
+            playbackText.text="正在准备第 ${episodeIndex+1} 集… · 上一集画面会保留到新画面就绪"
+        }
+        else { hidePlaybackOverlay(); playbackSpinner?.visibility=View.VISIBLE }
         controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null
         syncMediaSession()
         // 弹幕：切集重置，清空 overlay 待发射队列（旧集残余），重新拉取本集弹幕
@@ -2123,16 +2201,22 @@ class MainActivity: Activity() {
             prefetched ?: openStream(repository.http,repository,requestedId,maxQuality,data.contentType,
                     supportsTier={ CodecCapabilities.supports(it) },
                     metadataAhead=ahead,
-                    supportsTrack={ it==null || CodecCapabilities.supports(it) })
+                    supportsTrack={ it==null || CodecCapabilities.supports(it) },
+                    learnedFailure={ CodecCapabilities.learnedFailure(it) },
+                    retryLearned=forceBest)
                 ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         }, { opened ->
             val remote=opened.video
             video=remote
-            quality=if(opened.info.qualityValue>maxQuality) "${opened.info.quality}（兼容资源）" else opened.info.quality
+            quality=when {
+                opened.info.isFallback -> "${opened.info.quality}（网页兜底）"
+                opened.info.qualityValue>maxQuality -> "${opened.info.quality}（兼容资源）"
+                else -> opened.info.quality
+            }
             attemptedQuality=opened.info.qualityValue
             currentTrack=opened.track; currentTier=opened.info; currentTiers=opened.tiers
             val p=player ?: run {
-                val load=DefaultLoadControl.Builder().setBufferDurationsMs(15000,30000,1000,2000).setTargetBufferBytes(12*1024*1024).build()
+                val load=DefaultLoadControl.Builder().setBufferDurationsMs(20000,40000,1000,4000).setTargetBufferBytes(24*1024*1024).build()
                 val renderers=androidx.media3.exoplayer.DefaultRenderersFactory(this).setEnableDecoderFallback(true)
                 ExoPlayer.Builder(this,renderers).setLoadControl(load).build().also {
                     player=it; playerView?.player=it
@@ -2141,6 +2225,43 @@ class MainActivity: Activity() {
                 }
             }
             p.setPlaybackSpeed(library.playbackSpeed)
+            if(analyticsListener==null) {
+                val analytics=object: AnalyticsListener {
+                    override fun onVideoInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: Format,
+                        decoderReuseEvaluation: DecoderReuseEvaluation?,
+                    ) {
+                        val frameRate=format.frameRate
+                        android.util.Log.i(
+                            "HongguoTV",
+                            "Video input ${format.codecs}/${format.width}x${format.height}@${frameRate}fps",
+                        )
+                        if(frameRate>0f) main.post { applyPlaybackDisplayMode(frameRate) }
+                    }
+                    override fun onVideoFrameProcessingOffset(
+                        eventTime: AnalyticsListener.EventTime,
+                        totalProcessingOffsetUs: Long,
+                        frameCount: Int,
+                    ) {
+                        android.util.Log.i(
+                            "HongguoTV",
+                            "Frame offset us=$totalProcessingOffsetUs frames=$frameCount",
+                        )
+                    }
+                    override fun onDroppedVideoFrames(
+                        eventTime: AnalyticsListener.EventTime,
+                        droppedFrames: Int,
+                        elapsedMs: Long,
+                    ) {
+                        if(droppedFrames>0) {
+                            android.util.Log.w("HongguoTV","Dropped video frames=$droppedFrames elapsedMs=$elapsedMs")
+                        }
+                    }
+                }
+                analyticsListener=analytics
+                p.addAnalyticsListener(analytics)
+            }
             val listener=object: Player.Listener {
                 private fun active()=player===p && generation==ticket && p.currentMediaItem?.mediaId==requestedId
                 override fun onPlaybackStateChanged(state: Int) {
@@ -2155,6 +2276,13 @@ class MainActivity: Activity() {
                         if(p.duration>0) danmakuDuration=p.duration
                         if(firstReady) { firstReady=false; readySince=android.os.SystemClock.elapsedRealtime(); android.util.Log.i("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}") }
                         if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                    }
+                    if(state==Player.STATE_BUFFERING && prefetchJob?.isDone==false) {
+                        stopPrefetch()
+                        android.util.Log.i(
+                            "HongguoTV",
+                            "Paused episode prefetch while buffering: position=${p.currentPosition} buffered=${p.bufferedPosition}",
+                        )
                     }
                     syncMediaSession()
                     if(state==Player.STATE_ENDED) {
@@ -2173,6 +2301,7 @@ class MainActivity: Activity() {
                         firstFrame=false
                         playbackSpinner?.visibility=View.GONE
                         android.util.Log.i("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
+                        if(!panel) hidePlaybackOverlay()
                     }
                 }
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(hud.visibility==View.VISIBLE) updatePlaybackText(); syncMediaSession() } }
@@ -2182,17 +2311,55 @@ class MainActivity: Activity() {
             }
             playerListener=listener; p.addListener(listener)
             val source=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(MediaItem.Builder().setMediaId(requestedId).setUri("hongguotv://episode/$requestedId").setMimeType(MimeTypes.VIDEO_MP4).build())
-            p.setMediaSource(source); p.seekTo(position.coerceAtLeast(0)); p.prepare(); p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && episodePanel==null
-        }, { problem -> playerFailure(problem) })
+            p.setMediaSource(source); p.seekTo(position.coerceAtLeast(0)); p.prepare()
+            p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && playerSidebar==null
+            // The new source owns the surface now. Only then detach the previous
+            // stream; until this point its decoded frame stayed visible on screen.
+            previousVideo?.close()
+            closeTransport(previousHttp)
+        }, { problem ->
+            previousVideo?.close()
+            closeTransport(previousHttp)
+            playerFailure(problem)
+        })
     }
     private fun closeTransport(http: okhttp3.OkHttpClient?) {
         if(http==null) return
         // Closing an idle TLS connection can write close_notify; keep it off the UI thread.
         networkCleanup.execute { http.dispatcher.cancelAll(); http.connectionPool.evictAll(); http.dispatcher.executorService.shutdown() }
     }
+    /**
+     * Match the display cadence to the decoded stream. S621 exposes only 50/60Hz;
+     * 25fps content on 60Hz gets a visible 3:2 cadence judder, while 50Hz is exact.
+     */
+    private fun applyPlaybackDisplayMode(frameRate: Float) {
+        if(screen!="player" || !foreground || player==null || isFinishing || isDestroyed) return
+        val targets=displayRefreshTargets(frameRate)
+        if(targets.isEmpty()) { clearPlaybackDisplayMode(); return }
+        @Suppress("DEPRECATION")
+        val currentDisplay=if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.R) display else windowManager.defaultDisplay
+        val modes=currentDisplay?.supportedModes?.toList().orEmpty()
+        val mode=targets.firstNotNullOfOrNull { target ->
+            modes.filter { kotlin.math.abs(it.refreshRate-target)<=0.6f }
+                .minByOrNull { kotlin.math.abs(it.refreshRate-target) }
+        }
+        if(mode==null) { clearPlaybackDisplayMode(); return }
+        val attrs=window.attributes
+        if(attrs.preferredDisplayModeId==mode.modeId) return
+        attrs.preferredDisplayModeId=mode.modeId
+        window.attributes=attrs
+        android.util.Log.i("HongguoTV","Display mode ${mode.refreshRate}Hz for ${frameRate}fps video")
+    }
+    private fun clearPlaybackDisplayMode() {
+        val attrs=window.attributes
+        if(attrs.preferredDisplayModeId==0) return
+        attrs.preferredDisplayModeId=0
+        window.attributes=attrs
+        android.util.Log.i("HongguoTV","Display mode restored to system default")
+    }
     private fun prefetchKey(id: String,quality: Int)="$id:$quality"
     private fun prefetchTargets(data: Detail,index: Int,quality: Int): List<String> =
-        data.episodes.drop(index+1).take(3).map { prefetchKey(it,quality) }
+        data.episodes.drop(index+1).take(2).map { prefetchKey(it,quality) }
     private fun stopPrefetch() {
         prefetchEpoch++
         prefetchScope?.cancel(); prefetchScope=null
@@ -2215,17 +2382,18 @@ class MainActivity: Activity() {
         prefetchRetryAt=0
     }
     /**
-     * Warm the next three episodes on one background lane. Each item owns its transport
+     * Warm the next two episodes on one background lane. Each item owns its transport
      * until it is claimed by playEpisode(), so switching never closes a stream still in use.
      */
     private fun prefetchAhead() {
         val data=detail ?: return
         val p=player ?: return
         if(screen!="player" || !foreground || playError || sleepStopped || !playbackReady) return
+        if(p.playbackState==Player.STATE_BUFFERING) return
         if(prefetchJob?.isDone==false) return
         if(connectivity.isActiveNetworkMetered || !networkAvailable()) return
         val now=android.os.SystemClock.elapsedRealtime()
-        if(readySince==0L || now-readySince<2500 || p.bufferedPosition-p.currentPosition<5000) return
+        if(readySince==0L || now-readySince<2000 || p.bufferedPosition-p.currentPosition<10000) return
         val quality=library.maxQuality
         val targets=prefetchTargets(data,episodeIndex,quality)
         if(targets.isEmpty()) { prefetchRetryAt=0; return }
@@ -2259,7 +2427,8 @@ class MainActivity: Activity() {
                             supportsTier={ CodecCapabilities.supports(it) },
                             metadataAhead=data.episodes.drop(episodePos+1).take(2),
                             speculative=true,
-                            supportsTrack={ it==null || CodecCapabilities.supports(it) })
+                            supportsTrack={ it==null || CodecCapabilities.supports(it) },
+                            learnedFailure={ CodecCapabilities.learnedFailure(it) })
                             ?: throw java.io.IOException("预加载没有可用清晰度")
                     }
                     opened.video.warm()
@@ -2345,6 +2514,13 @@ class MainActivity: Activity() {
         android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else "")+" [$diag]")
         val actions=row(); controls.addView(actions)
         addButton(actions,"立即重试") { playEpisode(episodeIndex,retryPosition,retryAutoplay) }.requestFocus()
+        val learned=CodecCapabilities.learnedCount()
+        if(learned>0) addButton(actions,"重置设备能力记录") {
+            CodecCapabilities.resetLearned()
+            forceBestOnNextPlay=true
+            android.util.Log.i("HongguoTV","Decoder capability lessons reset from playback error ($learned entries)")
+            playEpisode(episodeIndex,retryPosition,retryAutoplay)
+        }
         // The manual button names a REAL lower tier from this episode's ladder (upstream
         // nextLowerQuality). Fall back to 720P only when no ladder was captured (prefetch).
         val lowerTier=if(noPlayableQuality) null else nextLowerQuality(attemptedQuality,currentTiers)
@@ -2372,7 +2548,7 @@ class MainActivity: Activity() {
         val p=player ?: return
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
         val parts=mutableListOf("${formatTime(position)} / ${formatTime(duration)}")
-        if(quality.isNotBlank()) parts+=quality
+        if(quality.isNotBlank() || currentTrack!=null) parts+=actualQualityText()
         if(p.playbackParameters.speed!=1f) parts+=PlaybackSpeed.label(p.playbackParameters.speed)
         if(p.playbackState==Player.STATE_BUFFERING) parts+="缓冲中"
         if(p.playbackState==Player.STATE_ENDED) parts+="本集已结束"
@@ -2385,7 +2561,7 @@ class MainActivity: Activity() {
         if(play) sleepStopped=false
         if(!play) { player?.pause(); retryAutoplay=false; saveProgress() }
         else if(playError) { playEpisode(episodeIndex,retryPosition,true); return }
-        else if(episodePanel==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
+        else if(playerSidebar==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
         if(!play) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if(hud.visibility==View.VISIBLE) updatePlaybackText()
@@ -2459,45 +2635,16 @@ class MainActivity: Activity() {
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
         val toolbar=row(); controls.addView(toolbar)
         val play=addButton(toolbar,if(player?.playWhenReady==true) "暂停" else "播放",true) { togglePlayback() }.apply {
-            textSize=15f; setPadding(dp(18),dp(7),dp(18),dp(7)); minHeight=dp(TvStyle.CONTROL_PRIMARY)
+            textSize=15f; setPadding(dp(22),dp(8),dp(22),dp(8)); minHeight=dp(TvStyle.CONTROL_PRIMARY)
+            TvStyle.paintPlayerPrimary(this)
         }.also { transportPlay=it }
-        addButton(toolbar,"上一集") { if(episodeIndex>0) playEpisode(episodeIndex-1) }.apply {
-            isEnabled=episodeIndex>0; isFocusable=episodeIndex>0; alpha=if(episodeIndex>0) 1f else .4f
-            textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-        }
-        addButton(toolbar,"下一集") { if(episodeIndex<(detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex+1) }.apply {
-            val enabled=episodeIndex<(detail?.episodes?.lastIndex ?: 0); isEnabled=enabled; isFocusable=enabled; alpha=if(enabled) 1f else .4f
-            textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-        }
-        toolbar.addView(Space(this),lp(dp(4),1))
+        toolbar.addView(Space(this),lp(0,1).apply { weight=1f })
         lateinit var episodes: TextView
-        episodes=addButton(toolbar,"选集") { showEpisodePanel(episodes) }.apply {
+        episodes=addButton(toolbar,"选集") { showPlayerSidebar(episodes,PlayerSidebarTab.EPISODES) }.apply {
             textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
         }
         lateinit var more: TextView
-        more=addButton(toolbar,"播放设置") {
-            tvTools.choose("播放设置",listOf("倍速 ${PlaybackSpeed.label(library.playbackSpeed)}","清晰度 ${library.maxQuality}P","画面 ${library.frameMode.label}","弹幕 ${if(library.danmaku) "开" else "关"}","弹幕设置","定时 ${sleepTimer.label()}","从头播放","重置设备能力记录"),more,{ choice ->
-                main.post {
-                    if(screen=="player" && more.isAttachedToWindow) when(choice) {
-                        0 -> showSpeedPicker(more)
-                        1 -> showQualityPicker(more,true)
-                        2 -> showFramePicker(more,true)
-                        3 -> toggleDanmakuInPlayer()
-                        4 -> showDanmakuStylePicker(more,true)
-                        5 -> showSleepPicker(more)
-                        6 -> { seekTo(0); hidePlaybackOverlay() }
-                        // Clears learned decoder failures (upstream 2026-11-14 port): after
-                        // a firmware/decoder change the box re-probes its real capabilities.
-                        7 -> {
-                            val count=CodecCapabilities.learnedCount()
-                            CodecCapabilities.resetLearned()
-                            android.util.Log.i("HongguoTV","Decoder capability lessons reset ($count entries)")
-                            playbackText.text=if(count>0) "已清除 $count 条设备能力记录，重新按解码器实际能力选流" else "暂无设备能力记录"
-                        }
-                    }
-                }
-            })
-        }.apply {
+        more=addButton(toolbar,"播放设置") { showPlayerSidebar(more,PlayerSidebarTab.SETTINGS) }.apply {
             tag="playback-settings"
             textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
         }
@@ -2655,38 +2802,102 @@ class MainActivity: Activity() {
     }
     private fun showQualityPicker(anchor: TextView,inPlayer: Boolean) {
         val options=PlaybackQuality.options
-        val dialog=TvDialogUi.choice(this,"全局默认清晰度",options.map { "${it}P" },options.indexOf(library.maxQuality),onChoice={ index ->
+        val dialog=TvDialogUi.choice(this,"清晰度上限（设备不支持时自动降级）",options.map { "${it}P" },options.indexOf(library.maxQuality),onChoice={ index ->
                 val target=options[index]; val changed=library.maxQuality!=target
                 library.maxQuality=target
-                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "默认清晰度  ·  ")+"${target}P"
-                if(inPlayer && changed) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "清晰度上限  ·  ")+"${target}P"
+                if(changed) {
+                    forceBestOnNextPlay=true
+                    if(inPlayer) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
+                }
             })
         dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
         dialog.show()
     }
-    private fun showEpisodePanel(anchor: View) {
+    private fun actualQualityText(): String {
+        val name=quality.ifBlank { currentTier?.quality.orEmpty() }.ifBlank { "自动" }
+        val size=currentTrack?.let { "${it.width}×${it.height}" }
+        return listOf(name,size).filterNotNull().filter { it.isNotBlank() }.joinToString(" · ")
+    }
+    private fun showPlayerSidebar(anchor: View?,initial: PlayerSidebarTab) {
         val data=detail ?: return
-        if(episodePanel!=null) return
+        if(playerSidebar!=null) return
         val ticket=generation
         val overlayWasVisible=hud.visibility==View.VISIBLE
         requestedAutoplay=player?.playWhenReady ?: requestedAutoplay
         player?.pause(); saveProgress()
         var resumeOnClose=true
-        val next=EpisodePanel(this,data.episodes.size,episodeIndex,
+        val next=PlayerSidebar(this,PlayerSidebarState(
+            data.series.title,data.series.cover,data.episodes.size,episodeIndex,
+            library.playbackSpeed,library.maxQuality,actualQualityText(),library.frameMode,
+            library.danmaku,library.danmakuSize,library.danmakuSpeed,library.danmakuRows,library.danmakuAlpha,
+            sleepTimer.label(),
+        ),::loadCover,
             { current,view,located -> tvTools.episodePicker(data.episodes.size,current,view,located) },
             { selected ->
-                if(selected==episodeIndex) episodePanel?.dismiss()
-                else { resumeOnClose=false; episodePanel?.dismiss(); playEpisode(selected) }
+                if(selected==episodeIndex) playerSidebar?.dismiss()
+                else { resumeOnClose=false; playerSidebar?.dismiss(); playEpisode(selected,autoplay=requestedAutoplay) }
+            },
+            { value ->
+                library.playbackSpeed=value; player?.setPlaybackSpeed(value); updatePlaybackText()
+            },
+            { value ->
+                if(library.maxQuality!=value) {
+                    val position=currentPosition()
+                    val autoplay=requestedAutoplay
+                    resumeOnClose=false
+                    playerSidebar?.dismiss()
+                    library.maxQuality=value
+                    forceBestOnNextPlay=true
+                    playEpisode(episodeIndex,position,autoplay)
+                }
+            },
+            { mode ->
+                library.frameMode=mode; playerView?.resizeMode=frameResizeMode()
+            },
+            { enabled ->
+                if(library.danmaku!=enabled) toggleDanmakuInPlayer()
+            },
+            { index ->
+                library.danmakuSize=index
+                danmakuOverlay?.restyle(currentDanmakuParams())
+            },
+            { index ->
+                library.danmakuSpeed=index
+                danmakuOverlay?.restyle(currentDanmakuParams())
+            },
+            { index ->
+                library.danmakuRows=index
+                danmakuOverlay?.restyle(currentDanmakuParams())
+            },
+            { index ->
+                library.danmakuAlpha=index
+                danmakuOverlay?.restyle(currentDanmakuParams())
+            },
+            { view -> if(view is TextView) showSleepPicker(view) },
+            {
+                resumeOnClose=false
+                playerSidebar?.dismiss()
+                seekTo(0)
+                hidePlaybackOverlay()
+                requestPlayback(true)
             },
             {
-                episodePanel=null
+                val count=CodecCapabilities.learnedCount()
+                CodecCapabilities.resetLearned()
+                android.util.Log.i("HongguoTV","Decoder capability lessons reset ($count entries)")
+                playbackText.text=if(count>0) "已清除 $count 条设备能力记录，重新按解码器实际能力选流" else "暂无设备能力记录"
+            },
+            {
+                playerSidebar=null
                 if(resumeOnClose && foreground && generation==ticket && screen=="player") {
                     if(requestedAutoplay && !sleepStopped && !pausedForLifecycle) player?.play()
-                    if(anchor.isAttachedToWindow) anchor.requestFocus()
-                    if(overlayWasVisible) showHud() else hidePlaybackOverlay()
+                    if(anchor?.isAttachedToWindow==true) anchor.requestFocus() else transportPlay?.takeIf { it.isAttachedToWindow }?.requestFocus()
+                    if(overlayWasVisible) { panel=true; showHud() } else hidePlaybackOverlay()
                 }
-            })
-        episodePanel=next; next.show()
+            }
+        )
+        playerSidebar=next; next.show(initial)
     }
     private fun formatTime(millis: Long): String { val seconds=(millis.coerceAtLeast(0)/1000); return "%02d:%02d".format(seconds/60,seconds%60) }
     private fun saveProgress(completed: Boolean=false) {
@@ -2702,11 +2913,13 @@ class MainActivity: Activity() {
     }
     private fun releasePlayer() {
         cancelRecovery(); cancelPrefetch(); mediaSession.deactivate(); tvTools.close()
+        clearPlaybackDisplayMode()
         val wasForeground=foreground; foreground=false
-        val oldPanel=episodePanel; episodePanel=null; oldPanel?.dismiss(); foreground=wasForeground
+        val oldPanel=playerSidebar; playerSidebar=null; oldPanel?.dismiss(); foreground=wasForeground
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
+        analyticsListener?.let { player?.removeAnalyticsListener(it) }; analyticsListener=null
         video?.close(); video=null; playerView?.player=null; playerView=null; stopDanmakuFetch(); danmakuOverlay?.shutdown(); danmakuOverlay=null; player?.release(); player=null; playbackReady=false; playbackSpinner=null; transportPlay=null; sleepButton=null
         closeTransport(playbackHttp); playbackHttp=null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -2826,7 +3039,7 @@ class MainActivity: Activity() {
             if(key==KeyEvent.KEYCODE_BACK) { if(event.action==KeyEvent.ACTION_UP) goBack(); return true }
             if(key==KeyEvent.KEYCODE_MENU) {
                 if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) {
-                    if(panel && hud.visibility==View.VISIBLE) hidePlaybackOverlay() else showPanel()
+                    if(playerSidebar==null) showPlayerSidebar(transportPlay ?: controls,PlayerSidebarTab.EPISODES)
                 }
                 return true
             }
@@ -2845,7 +3058,7 @@ class MainActivity: Activity() {
             }
             if(!panel) {
                 if(key==KeyEvent.KEYCODE_DPAD_CENTER || key==KeyEvent.KEYCODE_ENTER) {
-                    if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) togglePlayback()
+                    if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) showPanel()
                     return true
                 }
                 if(key in listOf(KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT,KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_DPAD_DOWN)) {
@@ -2896,7 +3109,7 @@ class MainActivity: Activity() {
         player?.pause(); saveProgress(); library.flush(); super.onPause()
     }
     override fun onStop() {
-        restoreStoppedPage=true; generation++; cancelWork(); tvTools.close()
+        restoreStoppedPage=true; generation++; cancelWork(); cancelCatalogPrefetch(); tvTools.close()
         if(screen=="player") { startPosition=currentPosition(); saveProgress(); releasePlayer() }
         artwork.cancelPage(clearMemory=true); library.flush(); super.onStop()
     }
@@ -2911,7 +3124,7 @@ class MainActivity: Activity() {
         favoriteMonitor.destroy(); tvTools.destroy(); updater.destroy(); saveProgress(); releasePlayer(); library.close()
         if(::cloudAccount.isInitialized) cloudAccount.destroy()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
-        io.shutdownNow(); prefetchWorker.shutdownNow(); networkCleanup.shutdown()
+        cancelCatalogPrefetch(); io.shutdownNow(); prefetchWorker.shutdownNow(); catalogPrefetchWorker.shutdownNow(); networkCleanup.shutdown()
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()
     }

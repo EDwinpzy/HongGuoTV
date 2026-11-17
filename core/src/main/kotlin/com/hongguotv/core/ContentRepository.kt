@@ -55,7 +55,7 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
  */
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String,
                       val codec: String = "", val width: Int = 0, val height: Int = 0,
-                      val qualityValue: Int = 0)
+                      val qualityValue: Int = 0, val isFallback: Boolean = false)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
 /**
@@ -243,6 +243,19 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
 
     private val themeCache=linkedMapOf<String, Pair<Long,List<Theme>>>()
     private val themeTtlMs=30*60*1000L
+
+    /** Cached theme strip only; never touches the network (safe on the UI thread). */
+    fun cachedThemes(type: ContentType): List<Theme>? {
+        val key="themes:${type.storedValue}"
+        val now=System.currentTimeMillis()
+        synchronized(themeCache) {
+            val cached=themeCache[key] ?: return null
+            return cached.second.takeIf { now<cached.first }
+        }
+    }
+
+    /** Built-in strip for first paint while [themes] refreshes in the background. */
+    fun fallbackThemes(type: ContentType): List<Theme> = ThemeCategory.fallback(type)
 
     /** Theme list for a content type: read from the category root page (selectorList,
      *  follows site changes); falls back to the built-in list when the page fails.
