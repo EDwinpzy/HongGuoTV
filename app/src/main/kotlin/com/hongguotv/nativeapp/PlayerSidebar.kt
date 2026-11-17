@@ -63,12 +63,11 @@ class PlayerSidebar(
     private val closed: () -> Unit,
 ) {
     private val dialog = Dialog(activity)
-    private val gold = Color.rgb(214, 163, 93)
-    private val goldSoft = Color.rgb(225, 183, 119)
-    private val ivory = Color.rgb(244, 239, 228)
-    private val muted = Color.rgb(153, 156, 148)
-    private val chipColor = Color.rgb(27, 32, 29)
-    private val chipActive = Color.rgb(44, 37, 27)
+    private val accent = TvStyle.accent
+    private val accentSoft = TvStyle.accentBright
+    private val muted = TvStyle.muted
+    private val chipColor = Color.rgb(36, 36, 40)
+    private val chipActive = TvStyle.accentDim
     private val groupSize = 60
     private var page = state.current / groupSize
     private var tab = PlayerSidebarTab.EPISODES
@@ -77,7 +76,7 @@ class PlayerSidebar(
 
     private fun dp(n: Number) = (n.toFloat() * activity.resources.displayMetrics.density).toInt()
 
-    private fun label(value: String, size: Float, color: Int = ivory) =
+    private fun label(value: String, size: Float, color: Int = TvStyle.text) =
         TextView(activity).apply {
             text = value
             textSize = size
@@ -90,7 +89,7 @@ class PlayerSidebar(
     private fun panelBackground() =
         GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.rgb(23, 27, 25), Color.rgb(17, 21, 19), Color.rgb(12, 16, 15)),
+            intArrayOf(Color.rgb(38, 38, 42), Color.rgb(22, 22, 25), Color.rgb(14, 14, 16)),
         ).apply {
             cornerRadii = floatArrayOf(
                 dp(28).toFloat(), dp(28).toFloat(),
@@ -98,23 +97,23 @@ class PlayerSidebar(
                 0f, 0f,
                 dp(28).toFloat(), dp(28).toFloat(),
             )
-            setStroke(dp(1).coerceAtLeast(1), Color.argb(150, 214, 163, 93))
+            setStroke(dp(1).coerceAtLeast(1), Color.argb(68, 255, 255, 255))
         }
 
     private fun chipBackground(focused: Boolean, selected: Boolean, currentEpisode: Boolean = false) =
         TvStyle.shape(
             activity,
             when {
-                focused -> Color.rgb(244, 239, 228)
-                currentEpisode -> Color.rgb(54, 43, 28)
+                focused -> Color.WHITE
+                currentEpisode -> accent
                 selected -> chipActive
                 else -> chipColor
             },
             when {
                 focused -> Color.WHITE
-                currentEpisode -> gold
-                selected -> Color.argb(170, 214, 163, 93)
-                else -> Color.argb(45, 244, 239, 228)
+                currentEpisode -> TvStyle.accentBright
+                selected -> TvStyle.accent
+                else -> TvStyle.outline
             },
             11,
             if (focused || currentEpisode) 2f else 1f,
@@ -122,10 +121,10 @@ class PlayerSidebar(
 
     private fun chipTextColor(focused: Boolean, selected: Boolean, currentEpisode: Boolean = false) =
         when {
-            focused -> Color.rgb(15, 18, 16)
-            currentEpisode -> goldSoft
-            selected -> ivory
-            else -> Color.rgb(214, 208, 197)
+            focused -> Color.BLACK
+            currentEpisode -> Color.WHITE
+            selected -> accentSoft
+            else -> TvStyle.text
         }
 
     private fun chip(
@@ -233,7 +232,7 @@ class PlayerSidebar(
             },
         )
         copy.addView(
-            label("清晰度上限 ${state.quality}P · 倍速 ${PlaybackSpeed.label(state.speed)}", 11.5f, goldSoft).apply {
+            label("清晰度上限 ${state.quality}P · 倍速 ${PlaybackSpeed.label(state.speed)}", 11.5f, accentSoft).apply {
                 setPadding(0, dp(6), 0, 0)
             },
         )
@@ -252,7 +251,7 @@ class PlayerSidebar(
         val bar = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(3), dp(3), dp(3), dp(3))
-            background = TvStyle.shape(activity, Color.rgb(25, 30, 27), Color.argb(32, 244, 239, 228), 11)
+            background = TvStyle.shape(activity, TvStyle.raised, TvStyle.outline, 11)
         }
         val items = listOf(PlayerSidebarTab.EPISODES to "选集", PlayerSidebarTab.SETTINGS to "播放设置")
         val views = items.map { (target, name) ->
@@ -407,7 +406,7 @@ class PlayerSidebar(
 
     private fun buildSettings(body: LinearLayout): List<MutableList<View>> {
         val rows = mutableListOf<MutableList<View>>()
-        body.addView(label("画面与播放", 11f, goldSoft).apply { setPadding(0, 0, 0, dp(7)) })
+        body.addView(label("画面与播放", 11f, accentSoft).apply { setPadding(0, 0, 0, dp(7)) })
         val qualityChoices = settingRow(
             body,
             "清晰度上限",
@@ -440,7 +439,7 @@ class PlayerSidebar(
             setFrameMode(value)
         }
 
-        body.addView(label("弹幕", 11f, goldSoft).apply { setPadding(0, dp(13), 0, dp(7)) })
+        body.addView(label("弹幕", 11f, accentSoft).apply { setPadding(0, dp(13), 0, dp(7)) })
         rows += settingRow(body, "显示", listOf("关闭", "开启"), if (state.danmaku) 1 else 0) {
             state = state.copy(danmaku = it == 1)
             setDanmaku(it == 1)
@@ -482,7 +481,7 @@ class PlayerSidebar(
             setDanmakuAlpha(it)
         }
 
-        body.addView(label("观看", 11f, goldSoft).apply { setPadding(0, dp(13), 0, dp(7)) })
+        body.addView(label("观看", 11f, accentSoft).apply { setPadding(0, dp(13), 0, dp(7)) })
         val sleepRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         sleepRow.addView(label("定时停止", 12f, muted), LinearLayout.LayoutParams(dp(76), -2))
         lateinit var sleep: TextView

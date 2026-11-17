@@ -43,7 +43,7 @@ object TvStyle {
     val outline = Color.rgb(56, 56, 58)
     val success = Color.rgb(48, 209, 88)
     val danger = Color.rgb(255, 69, 58)
-    val playerGold = Color.rgb(225, 183, 119)
+    val playerAccent = accentBright
 
     /** Fixed 2:3 poster ratio. Never squeeze artwork into a near-square slot. */
     const val POSTER_ASPECT = .66f
@@ -259,7 +259,7 @@ object TvStyle {
         )
 
     fun playerChip(context: Context): GradientDrawable =
-        shape(context, Color.rgb(46, 39, 28), Color.argb(170, 214, 163, 93), 12)
+        shape(context, Color.argb(220, 27, 55, 86), Color.argb(190, 100, 181, 255), 12)
 
     /** video-pro style circular primary action: quiet black glass, white focus fill. */
     fun paintPlayerPrimary(view: TextView) {

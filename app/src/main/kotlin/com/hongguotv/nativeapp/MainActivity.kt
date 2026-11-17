@@ -254,7 +254,7 @@ class MainActivity: Activity() {
     private var player: ExoPlayer?=null
     private var video: RemoteVideo?=null
     private var playbackReady=false
-    private var playbackSpinner: ProgressBar?=null
+    private var playbackSpinner: View?=null
     private var pausedForLifecycle=false
     private lateinit var hud: LinearLayout
     private lateinit var playbackText: TextView
@@ -357,11 +357,11 @@ class MainActivity: Activity() {
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback); networkRegistered=true }
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
-        message(base(),"正在读取本机记录…")
+        message(base(),"正在读取本机记录…",loading=true)
         loadLibrary()
     }
     private fun showLibraryError(problem: Throwable) {
-        val body=base(); error(body,problem) { message(base(),"正在读取本机记录…"); loadLibrary() }
+        val body=base(); error(body,problem) { message(base(),"正在读取本机记录…",loading=true); loadLibrary() }
     }
     private fun loadLibrary() {
         libraryLoadError=null
@@ -482,13 +482,7 @@ class MainActivity: Activity() {
     private fun showLoading() {
         if(isFinishing || isDestroyed) return
         loadingOverlay?.let { root.removeView(it) }
-        val overlay=FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK); isClickable=true; isFocusable=true
-            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleLarge).apply {
-                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-            },FrameLayout.LayoutParams(dp(38),dp(38),Gravity.CENTER))
-        }
+        val overlay=TvLoadingUi.overlay(this)
         root.addView(overlay,FrameLayout.LayoutParams(-1,-1))
         loadingOverlay=overlay; overlay.requestFocus()
     }
@@ -496,24 +490,16 @@ class MainActivity: Activity() {
         loadingOverlay?.let { root.removeView(it) }
         loadingOverlay=null
     }
-    private fun inlineLoading(): View = FrameLayout(this).apply {
-        addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleSmall).apply {
-            indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-        },FrameLayout.LayoutParams(dp(24),dp(24),Gravity.CENTER))
+    private fun inlineLoading(): View = TvLoadingUi.inline(this,"正在加载更多").apply {
+        layoutParams=lp(-1,dp(48))
     }
-    private fun message(parent: LinearLayout,label: String) {
+    private fun message(parent: LinearLayout,label: String,loading: Boolean=false) {
         val panel=column().apply {
             setPadding(dp(24),dp(18),dp(24),dp(18)); background=TvStyle.panel(this@MainActivity,22)
             gravity=Gravity.CENTER_HORIZONTAL
         }
-        if(label.contains("正在") || label.contains("加载")) {
-            val line=row().apply { gravity=Gravity.CENTER }
-            line.addView(ProgressBar(this,null,android.R.attr.progressBarStyleSmall).apply {
-                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-            },lp(dp(20),dp(20)).apply { rightMargin=dp(10) })
-            line.addView(text(label,15f,muted).apply { gravity=Gravity.CENTER_VERTICAL; setLineSpacing(0f,1.2f) })
-            panel.addView(line)
-        } else panel.addView(text(label,16f,muted).apply { gravity=Gravity.CENTER; setLineSpacing(0f,1.2f) },lp(-1,-2))
+        if(loading) panel.addView(TvLoadingUi.inline(this,label))
+        else panel.addView(text(label,16f,muted).apply { gravity=Gravity.CENTER; setLineSpacing(0f,1.2f) },lp(-1,-2))
         parent.addView(panel,lp(-1,-2).apply { topMargin=dp(14); bottomMargin=dp(10) })
     }
     private fun error(parent: LinearLayout,problem: Throwable,retry: ()->Unit) {
@@ -810,7 +796,7 @@ class MainActivity: Activity() {
                 textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
             }
             container.addView(heading)
-            rankSubtitle=text(if(fetch) "正在读取最新榜单…" else ranking?.updatedText?.ifBlank { "来源：红果${library.rankBoard.label}" } ?: "来源：红果${library.rankBoard.label}",12.5f,muted)
+            rankSubtitle=text(if(fetch) "来源：红果${library.rankBoard.label}" else ranking?.updatedText?.ifBlank { "来源：红果${library.rankBoard.label}" } ?: "来源：红果${library.rankBoard.label}",12.5f,muted)
                 .apply { setPadding(0,0,0,dp(8)) }
             container.addView(rankSubtitle)
             nav.forEach { it.nextFocusDownId=rankButtons[current]?.id ?: rankRefresh!!.id }
@@ -872,7 +858,7 @@ class MainActivity: Activity() {
         if(fetch) {
             if(tab==0 || tab==1 || tab==2 || tab==3) catalogGrid(body,focusNav,focusType,loading=true)
             else {
-                message(body,"正在加载…")
+                body.addView(TvLoadingUi.catalogPlaceholder(this,if(tab==5) "正在同步" else "正在加载",2))
                 // Board switch: focus the freshly selected board button while loading.
                 if(focusType) rankButtons[rankFocusBoard ?: library.rankBoard]?.requestFocus() ?: nav[tab].requestFocus()
                 else nav[tab].requestFocus()
@@ -1014,9 +1000,13 @@ class MainActivity: Activity() {
         var restoringScroll=true
         val displayed=if(localCatalog()) catalog.take(page*pageSize) else if(tab==1 || tab==2 || tab==3 || tab==5) catalog else if(tab==0) catalog.filterNot { it.id in library.hidden() } else catalog.take(30)
         if(displayed.isEmpty()) {
-            message(list,if(loading) "正在加载推荐…" else when(tab) { 4 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 6 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 7 -> "播放过的剧集会自动保存在这里"; 8 -> if(cloudAccount.signedIn) "手机端暂无预约，在手机红果 App 里预约的剧会出现在这里" else "登录红果账号后，这里会显示手机端的预约"; else -> "本页没有更多内容" })
-            if(tab==0 && page>1) addButton(list,"上一页") { page--; showCatalog(!localCatalog()) }
-            if(tab==0 && hasMore) addButton(list,"下一页") { page++; showCatalog(!localCatalog()) }
+            if(loading) {
+                list.addView(TvLoadingUi.catalogPlaceholder(this,if(tab==0) "正在加载推荐" else "正在加载",2))
+            } else {
+                message(list,when(tab) { 4 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 6 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 7 -> "播放过的剧集会自动保存在这里"; 8 -> if(cloudAccount.signedIn) "手机端暂无预约，在手机红果 App 里预约的剧会出现在这里" else "登录红果账号后，这里会显示手机端的预约"; else -> "本页没有更多内容" })
+                if(tab==0 && page>1) addButton(list,"上一页") { page--; showCatalog(!localCatalog()) }
+                if(tab==0 && hasMore) addButton(list,"下一页") { page++; showCatalog(!localCatalog()) }
+            }
             if(themeFocusSlug!=null) { val slug=themeFocusSlug; themeFocusSlug=null; themeButtons[slug]?.requestFocus() ?: nav[tab].requestFocus() }
             // Focus already sits on a theme button (empty theme result): leave it there.
             else if((tab==1 || tab==2 || tab==3) && themeButtons.values.any { it.hasFocus() }) Unit
@@ -1303,12 +1293,22 @@ class MainActivity: Activity() {
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
         homeUpdateCount=library.updatedFavorites()
         selectionPreview=null
+        val shelves=homeShelves()
+        if(loading && shelves.none { it.entries.isNotEmpty() || it.more!=null }) {
+            body.addView(
+                TvLoadingUi.catalogPlaceholder(this,"正在加载首页内容",2),
+                lp(-1,0).apply { weight=1f },
+            )
+            nav.forEach { it.nextFocusDownId=it.id }
+            if(focusNav) nav[0].requestFocus()
+            return
+        }
         val top=nav[0]
         val home=HomeScreen(this,top,::loadCover,{ _, _ -> },
             { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it },
             null)
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
-        home.render(homeShelves(),catalogFocus,!focusNav && !focusType,null,homePosition)
+        home.render(shelves,catalogFocus,!focusNav && !focusType,null,homePosition)
         home.refresh.text=if(loading) if(homeFromCache) "已显示上次内容 · 正在更新热门…" else "正在更新热门…" else "刷新热门"
         home.refresh.setOnClickListener { invalidateCatalogCache(); showCatalog(true) }
         nav.forEach { it.nextFocusDownId=home.firstId() }
@@ -1824,9 +1824,7 @@ class MainActivity: Activity() {
             // Keep the search panel usable while waiting. A full-screen overlay would
             // take focus; removing it when the reply lands hands focus back to the top
             // nav, and the nav's focus listener immediately switches to 首页.
-            tvResultList?.addView(text("正在搜索…",14f,muted).apply {
-                setPadding(dp(4),dp(12),0,dp(12))
-            })
+            tvResultList?.addView(TvLoadingUi.catalogPlaceholder(this,"正在搜索",2))
         } finally { rebuildingGrid=false }
         // The panel just switched from GONE to VISIBLE, so its width is not measured yet.
         // Re-layout now so renderTvResults() can read the real panel width for card sizing.
@@ -1879,7 +1877,7 @@ class MainActivity: Activity() {
         }
         pendingDetail=series; detailAutoplay=autoplay
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; relatedSeasons=null
-        val body=base(series.title); message(body,"正在加载剧集…")
+        val body=base(series.title); body.addView(TvLoadingUi.detailPlaceholder(this,"正在加载剧集"))
         work({ repository.detail(series.id,tabContentType()) }, { result ->
             detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
             val progress=library.progress(series.id)
@@ -2147,11 +2145,8 @@ class MainActivity: Activity() {
                 danmakuOverlay=DanmakuOverlay(this).apply { restyle(currentDanmakuParams()) }
                 root.addView(danmakuOverlay,danmakuLayoutParams())
             }
-            playbackSpinner=ProgressBar(this,null,android.R.attr.progressBarStyleLarge).apply {
-                indeterminateTintList=android.content.res.ColorStateList.valueOf(Color.WHITE)
-                importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            }
-            root.addView(playbackSpinner,FrameLayout.LayoutParams(dp(32),dp(32),Gravity.CENTER))
+            playbackSpinner=TvLoadingUi.player(this)
+            root.addView(playbackSpinner,FrameLayout.LayoutParams(dp(58),dp(38),Gravity.CENTER))
             hud=column().apply {
                 setPadding(dp(widthDp()*.042f),dp(18),dp(widthDp()*.042f),dp(22)); background=TvStyle.playerShade()
                 visibility=View.GONE
@@ -2161,7 +2156,7 @@ class MainActivity: Activity() {
                 maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=TvStyle.titleTypeface(); letterSpacing=(-.02f)
             }
             titleRow.addView(playbackTitle,lp(0,-2).apply { weight=1f })
-            episodeBadge=text("",11.5f,TvStyle.playerGold).apply {
+            episodeBadge=text("",11.5f,TvStyle.playerAccent).apply {
                 typeface=TvStyle.typeface(true)
                 setPadding(dp(10),dp(4),dp(10),dp(4)); background=TvStyle.playerChip(this@MainActivity)
             }
