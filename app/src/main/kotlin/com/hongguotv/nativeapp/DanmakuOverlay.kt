@@ -90,18 +90,12 @@ class DanmakuOverlay(context: Context) : View(context) {
         /** 默认档位（与设置默认一致：18sp / 11s / 2 行 / alpha 档 1）。 */
         val DEFAULT_PARAMS = Params(sizeSp = DanmakuPrefs.size(1), travelSec = DanmakuPrefs.travelSec(1), rows = DanmakuPrefs.rows(1), alphaIndex = 1)
 
-        /** 真实弹幕下一条距当前 8s 以上视为“稀疏”，启动循环补位。 */
-        private const val GAP_FILL_MS = 8_000L
         /** 弹幕仅需文字滚动，30fps 足够；避免每帧整层重绘拖慢 TV 视频合成。 */
         private const val FRAME_INTERVAL_MS = 33L
     }
     private val shots = mutableListOf<Shot>()
     private val pending = mutableListOf<Pending>()
-    /** 弹幕池：真实弹幕耗尽后循环回收投放（冷门剧弹幕稀疏时保证画面始终有弹幕流）。 */
-    private val pool = mutableListOf<String>()
-    private var loopIndex = 0
-    /** 下次循环补位投放的播放位置（playhead 时间戳；<=0 表示待初始化，seek 跳变时归零重置）。 */
-    private var nextLoopEmitMs = 0L
+    private val seenTexts = DanmakuTextDeduper()
     private var running = false
     private var lastFrameMs = 0L
     /** 播放位置（由宿主每帧推进，假数据模式下由内部时钟模拟）。 */
@@ -116,16 +110,26 @@ class DanmakuOverlay(context: Context) : View(context) {
     /** 装载一批弹幕（timeMs 为该条在视频内应出现的毫秒位置）。 */
     fun load(items: List<Pair<Long, String>>) {
         pending.clear()
-        pending.addAll(items.map { Pending(it.first, it.second) }.sortedBy { it.timeMs })
         shots.clear()
+        seenTexts.clear()
+        addPending(items)
     }
 
     /** 追加一批弹幕（分页拉取合并；已发射的滚动条不受影响）。 */
     fun append(items: List<Pair<Long, String>>) {
-        items.forEach { pool.add(it.second) }
-        pending.addAll(items.map { Pending(it.first, it.second) })
-        pending.sortBy { it.timeMs }
-        if (items.isNotEmpty()) ensureRunning()
+        if (addPending(items)) ensureRunning()
+    }
+
+    private fun addPending(items: List<Pair<Long, String>>): Boolean {
+        var added=false
+        items.sortedBy { it.first }.forEach { item ->
+            if(seenTexts.isNew(item.second)) {
+                pending.add(Pending(item.first, item.second))
+                added=true
+            }
+        }
+        if(added) pending.sortBy { it.timeMs }
+        return added
     }
 
     /** 播放位置推进（playing=false 时暂停发射与滚动）。宿主 tick 每秒调用。 */
@@ -134,9 +138,8 @@ class DanmakuOverlay(context: Context) : View(context) {
         playheadMoving = playing
         playheadAnchorRealtime = SystemClock.elapsedRealtime()
         playheadAnchorMs = positionMs
-        if (positionMs < playheadMs) {  // seek 回退清屏，循环补位节奏重新起算
+        if (positionMs < playheadMs) {  // seek 回退清屏，等待播放头重新走到待发射时间
             shots.clear()
-            nextLoopEmitMs = 0L
         }
         playheadMs = positionMs
         if (playing) ensureRunning()
@@ -149,9 +152,7 @@ class DanmakuOverlay(context: Context) : View(context) {
         running = false
         pending.clear()
         shots.clear()
-        pool.clear()
-        loopIndex = 0
-        nextLoopEmitMs = 0L
+        seenTexts.clear()
         playheadMs = 0
         playheadMoving = false
         playheadRate = 1f
@@ -207,22 +208,8 @@ class DanmakuOverlay(context: Context) : View(context) {
             emitShot(item.text, nowMs, width)
         }
 
-        // 3. 循环补位：真实弹幕耗尽或稀疏（下一条 8s 开外）时，从池中轮询回收投放，
-        //    冷门剧画面上始终保有弹幕流；节奏随池子大小自适应（池大则密）。
-        if (playheadMoving && pool.isNotEmpty()) {
-            val nextRealMs = pending.firstOrNull()?.timeMs ?: Long.MAX_VALUE
-            if (head + GAP_FILL_MS < nextRealMs) {
-                if (nextLoopEmitMs <= 0L) nextLoopEmitMs = head
-                if (head >= nextLoopEmitMs) {
-                    emitShot(pool[loopIndex % pool.size], nowMs, width)
-                    loopIndex++
-                    nextLoopEmitMs = head + loopIntervalMs()
-                }
-            }
-        }
-
-        // 4. 绘制
-        if (shots.isEmpty() && pending.isEmpty() && (pool.isEmpty() || !playheadMoving)) {
+        // 3. 绘制
+        if (shots.isEmpty() && pending.isEmpty()) {
             running = false
             return
         }
@@ -244,9 +231,6 @@ class DanmakuOverlay(context: Context) : View(context) {
         }
         if (row >= 0) shots.add(Shot(text, textWidth, width, row, nowMs))
     }
-
-    /** 循环补位投放间隔：池子越大节奏越密，2–6s 自适应。 */
-    private fun loopIntervalMs(): Long = (60_000L / pool.size).coerceIn(2_000L, 6_000L)
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
