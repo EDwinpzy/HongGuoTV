@@ -65,18 +65,21 @@ class RecommendationFeed(
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
+    /** Fetched pages stay warm so reopening the tab can replay them without skipping. */
+    private val pageCache = linkedMapOf<Int, CatalogPage>()
 
-    @Synchronized
-    fun reset() {
+    fun reset() = synchronized(cursor) {
         cursor.restartServer()
         cursor.expectedPage = 1
         cursor.lastPage = 0
         cursor.lastResult = null
+        pageCache.clear()
         cursor.unsignedFallback = false
     }
 
     fun page(page: Int): CatalogPage = synchronized(cursor) {
         require(page in 1..100)
+        pageCache[page]?.let { return@synchronized it }
         if (page == cursor.lastPage) return@synchronized checkNotNull(cursor.lastResult)
         if (page != cursor.expectedPage) throw IOException("推荐已刷新，请重新获取")
 
@@ -157,6 +160,7 @@ class RecommendationFeed(
         cursor.expectedPage = page + 1
         cursor.lastPage = page
         cursor.lastResult = result
+        pageCache[page] = result
         result
     }
 
@@ -252,8 +256,10 @@ class RecommendationFeed(
     }
 
     companion object {
-        private const val PAGE_TARGET = 14
-        private const val MAX_ROUNDS = 5
+        // A vertical feed only needs a few entries to start playing. Keeping the first
+        // batch small avoids spending the whole tab-switch window aggregating 14 rows.
+        private const val PAGE_TARGET = 4
+        private const val MAX_ROUNDS = 2
         private const val FEED_UA =
             "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
         private const val LEGACY_UA =

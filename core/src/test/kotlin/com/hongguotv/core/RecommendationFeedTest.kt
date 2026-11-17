@@ -105,4 +105,35 @@ class RecommendationFeedTest {
         assertEquals(4,calls)
         assertEquals(2,feed.cursor.expectedPage)
     }
+
+    @Test fun fetchedPagesStayWarmAfterPagingAdvances() {
+        val requests=mutableListOf<Request>()
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            val request=chain.request()
+            requests+=request
+            val offset=request.url.queryParameter("offset")?.toIntOrNull() ?: 0
+            val body=feedBody(if(offset==0) listOf("301","302") else listOf("303","304"))
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).build()
+        }.build()
+        val feed=RecommendationFeed(
+            http,
+            AccountCredentials("session=real-account"),
+            pageTarget=2,
+            playbackSession=PlaybackDeviceSession {
+                DeviceRegister.Registered("1905892595378490","1905892595382586")
+            },
+            clock={ 1_760_000_000_000L },
+        )
+
+        val first=feed.page(1)
+        val second=feed.page(2)
+        val reopened=feed.page(1)
+        val reopenedSecond=feed.page(2)
+
+        assertEquals(listOf("301","302"),first.items.map { it.id })
+        assertEquals(first.items.map { it.id },reopened.items.map { it.id })
+        assertEquals(second.items.map { it.id },reopenedSecond.items.map { it.id })
+        assertEquals(2,requests.size)
+    }
 }

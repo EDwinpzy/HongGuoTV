@@ -107,7 +107,7 @@
 
 构建验证：`:app:testDebugUnitTest :core:test` 共 238 项，0 失败、0 错误、9 跳过；`:app:assembleRelease`、`:app:lintVitalRelease` 通过。APK v2 签名校验通过，SHA-256 为 `2B4212B5A1C72164E92558FB4BBEB89DD98FB758A7AC9909CD72730DAA9375FD`。
 
-## 2026-11-17 独立“推荐”标签页与页面头部精简（Release 实机）
+## 2026-11-17 独立“推荐”标签页与页面头部精简（历史；卡片流已被 2026-11-18 推荐视频流替换）
 
 验证包为 `1.1.2 / 10102`，使用本地 Release 签名覆盖安装；S621 输入均为 ADB 注入。
 
@@ -123,6 +123,26 @@
 | 换一批 | PASS | 按“换一批”后首卡内容变化，重新返回 14 部推荐且焦点落回首卡 |
 | 焦点与返回链 | PASS | 推荐卡片 → “换一批” → 顶部“推荐” → 首页；榜单筛选栏与刷新按钮、收藏和历史的操作按钮焦点未被布局精简破坏 |
 | 推荐续页 | PARTIAL | 本次账号推荐池在 14 部后未再返回新作品；焦点移到第二行后客户端停止追加并保持界面稳定。其他账号的更长推荐池、游客实机续页和长时间连续刷新未验证 |
+
+## 2026-11-18 推荐视频流启动与播放器频道栏（Debug 实机）
+
+验证包使用当前 `codex/recommend-tab` 工作区构建并覆盖安装到 S621；设备输入均为 ADB 注入。本轮重点修复推荐首屏被旧首页骨架和方向键拦截造成的“卡在推荐页”，并在播放条呼出时显示可切换频道的顶部标签栏。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 推荐首屏预热 | PASS | 启动后后台预热账号推荐首屏及首条详情；首次进入日志 `Recommendation start items=6 warmDetail=true elapsedMs=30` |
+| 切换推荐不再卡旧页面 | PASS | 切到“推荐”后立即清除旧首页骨架，进入黑场视频层；180ms 截图显示顶部频道栏，约 4.8 秒后视频首帧出画 |
+| 推荐重复进入 | PASS | 从短剧返回推荐日志 `Recommendation start elapsedMs=30`，约 2.7 秒后视频首帧出画，不再重复等待推荐接口聚合 |
+| 推荐清晰度 | PASS | 推荐播放与预取均使用 1080P；横屏与竖屏片源日志分别确认 `1080P/bytevc1/1920x1080`、`1080P/bytevc1/1080x1920` |
+| 播放条顶部频道栏 | PASS | 推荐预览按 OK 进入正常播放条后，顶部显示首页、推荐、短剧、漫剧、AI剧、搜索、榜单、收藏、历史、预约、设置；按上键可进入频道栏 |
+| 播放中切换频道 | PASS | 播放条呼出后按上键进入频道栏，聚焦“短剧”“搜索”“设置”并按 OK 均能关闭播放器并进入对应页面；短剧页日志 `Display mode restored to system default`，无播放器画面或音频残留 |
+| 推荐预览 MENU 隔离 | PASS | 推荐预览按 MENU 不弹出侧栏；按 OK 进入正常播放器后 MENU 仍打开原选集侧栏 |
+| 推荐首屏缓存 | PASS（单测） | `RecommendationFeedTest.fetchedPagesStayWarmAfterPagingAdvances` 验证第二页推进后再次读取第一、二页不再发起网络请求，返回内容不跳页 |
+| 推荐无缝换片 | PASS | 预览按 ↓ 后旧画面保持到新媒体就绪，日志显示 `Playback first frame episode=2 preloaded=true reused=true elapsedMs=2230` |
+
+本轮实机输入均为 ADB 注入，不是物理遥控器。长时间连续推荐滑动、弱网重试、更多账号推荐池长度和播放中频道切换后的二次播放仍待验证。
+
+最终 Debug 复测：账号恢复前会预热当前身份，恢复后按账号身份再预热；从短剧返回推荐日志 `elapsedMs=30`，首帧约 `2.7s`，首次进入首帧约 `4.5s`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:lintVitalRelease` 通过，242 项测试、0 失败、0 错误、9 跳过；Release APK v2 签名校验通过，SHA-256 为 `850CF367171EAE7BA698E26120CFC16775DD25A03AE1173BC30EE1E319F77BEC`。
 
 ## 未验证或有限制
 
