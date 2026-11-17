@@ -1035,10 +1035,14 @@ class MainActivity: Activity() {
         }
         // Infinite grids append pages in place, so their scroll key ignores the page number.
         catalogPageKey=if(tab==1 || tab==2 || tab==3 || tab==5 || tab==TAB_RECOMMEND || localCatalog()) "$tab:${collection.orEmpty()}:$themeSlug:$query" else "$tab:${collection.orEmpty()}:$page:$query"
-        val preview=SeriesPreview(this); selectionPreview=preview; body.addView(preview)
+        val preview=SeriesPreview(this); selectionPreview=preview
         // Collapsible preview everywhere (theme tabs, ranking, favorites, history):
         // the whole bar hides until a card actually takes focus and shows its title.
-        preview.collapsible=true; if(catalogFocus.isBlank()) preview.blank()
+        preview.collapsible=true
+        if(tab==TAB_RECOMMEND) preview.blank() else {
+            body.addView(preview)
+            if(catalogFocus.isBlank()) preview.blank()
+        }
         val scroll=ScrollView(this).apply { isFillViewport=false; isVerticalScrollBarEnabled=false; clipToPadding=false }; catalogScroll=scroll
         val list=column(); scroll.addView(list); body.addView(scroll,lp(-1,0).apply { weight=1f })
         var restoringScroll=true
