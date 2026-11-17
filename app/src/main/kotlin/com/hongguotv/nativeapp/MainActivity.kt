@@ -1070,7 +1070,8 @@ class MainActivity: Activity() {
                         learnedFailure={ CodecCapabilities.learnedFailure(it) })
                         ?: throw java.io.IOException("推荐预加载没有可用清晰度")
                 }
-                opened.video.warm()
+                // openStream() already prepared the header and first 256KB. Warming
+                // another 768KB competes with the video that is currently playing.
                 val ready=opened
                 opened=null
                 succeeded=true
@@ -2822,15 +2823,35 @@ class MainActivity: Activity() {
                             android.util.Log.w("HongguoTV","Dropped video frames=$droppedFrames elapsedMs=$elapsedMs")
                         }
                     }
+                    override fun onAudioUnderrun(
+                        eventTime: AnalyticsListener.EventTime,
+                        bufferSize: Int,
+                        bufferSizeMs: Long,
+                        elapsedSinceLastFeedMs: Long,
+                    ) {
+                        android.util.Log.w(
+                            "HongguoTV",
+                            "Audio underrun size=$bufferSize bufferedMs=$bufferSizeMs sinceFeedMs=$elapsedSinceLastFeedMs",
+                        )
+                    }
                 }
                 analyticsListener=analytics
                 p.addAnalyticsListener(analytics)
             }
             val listener=object: Player.Listener {
                 private fun active()=player===p && generation==ticket && p.currentMediaItem?.mediaId==requestedId
+                private var bufferingSince=0L
                 override fun onPlaybackStateChanged(state: Int) {
                     if(!active()) return
                     if(state==Player.STATE_READY) {
+                        if(bufferingSince>0) {
+                            android.util.Log.i(
+                                "HongguoTV",
+                                "Playback buffering ended stalledMs=${android.os.SystemClock.elapsedRealtime()-bufferingSince} "+
+                                    "position=${p.currentPosition} buffered=${p.bufferedPosition}",
+                            )
+                            bufferingSince=0
+                        }
                         if(!p.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO)) {
                             playerFailure(PlaybackException("资源没有可解码的视频轨道",null,PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED))
                             return
@@ -2841,6 +2862,14 @@ class MainActivity: Activity() {
                         if(hud.visibility==View.VISIBLE) updatePlaybackText()
                     }
                     if(state==Player.STATE_BUFFERING) {
+                        if(bufferingSince==0L) {
+                            bufferingSince=android.os.SystemClock.elapsedRealtime()
+                            android.util.Log.i(
+                                "HongguoTV",
+                                "Playback buffering started position=${p.currentPosition} buffered=${p.bufferedPosition} "+
+                                    "prefetching=${prefetchJob?.isDone==false}",
+                            )
+                        }
                         val wasPrefetching=prefetchJob?.isDone==false
                         stopPrefetch()
                         prefetchNextAt=android.os.SystemClock.elapsedRealtime()+PREFETCH_BUFFER_PAUSE_MS
@@ -3017,7 +3046,8 @@ class MainActivity: Activity() {
                             learnedFailure={ CodecCapabilities.learnedFailure(it) })
                             ?: throw java.io.IOException("预加载没有可用清晰度")
                     }
-                    opened.video.warm()
+                    // Header + first block are already cached by openStream(). Keep
+                    // speculative traffic small so playback reads stay ahead.
                     val ready=opened
                     opened=null
                     val scheduled=main.post {

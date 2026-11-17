@@ -24,7 +24,18 @@ class VideoDataSource(private val video: RemoteVideo): BaseDataSource(true) {
     override fun read(target: ByteArray,targetOffset: Int,length: Int): Int {
         if(length==0) return 0
         if(remaining==0L) return C.RESULT_END_OF_INPUT
-        if(offset>=buffer.size) { buffer=video.read(position,minOf(768*1024L,remaining).toInt()); offset=0 }
+        if(offset>=buffer.size) {
+            val started=android.os.SystemClock.elapsedRealtime()
+            // Short blocking fetches keep the decoder fed; 768KB often took 1–2s on S621.
+            val requested=minOf(256*1024L,remaining).toInt()
+            buffer=video.read(position,requested)
+            val elapsed=android.os.SystemClock.elapsedRealtime()-started
+            if(elapsed>=750) android.util.Log.w(
+                "HongguoTV",
+                "VideoDataSource slow read position=$position requested=$requested bytes=${buffer.size} elapsedMs=$elapsed",
+            )
+            offset=0
+        }
         if(buffer.isEmpty()) throw java.io.EOFException("视频分段意外结束")
         val count=minOf(length,buffer.size-offset,remaining.toInt())
         buffer.copyInto(target,targetOffset,offset,offset+count); offset+=count; position+=count; remaining-=count; bytesTransferred(count); return count
