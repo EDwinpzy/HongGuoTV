@@ -47,7 +47,7 @@ internal class PublicMp4StreamSource(
             val range = response.header("Content-Range")
             if (range == null && response.header("Content-Length") == "0") throw IOException("播放地址暂不可用")
         }
-        return StreamInfo(url, null, "360P")
+        return StreamInfo(url, null, "360P", isFallback = true)
     }
 
     /** Declared movie duration from mvhd; null when the header cannot be read. */

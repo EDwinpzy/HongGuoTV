@@ -43,6 +43,7 @@ object TvStyle {
     val outline = Color.rgb(56, 56, 58)
     val success = Color.rgb(48, 209, 88)
     val danger = Color.rgb(255, 69, 58)
+    val playerGold = Color.rgb(225, 183, 119)
 
     /** Fixed 2:3 poster ratio. Never squeeze artwork into a near-square slot. */
     const val POSTER_ASPECT = .66f
@@ -256,6 +257,22 @@ object TvStyle {
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Color.TRANSPARENT, Color.argb(205, 0, 0, 0), Color.argb(244, 0, 0, 0)),
         )
+
+    fun playerChip(context: Context): GradientDrawable =
+        shape(context, Color.rgb(46, 39, 28), Color.argb(170, 214, 163, 93), 12)
+
+    /** video-pro style circular primary action: quiet black glass, white focus fill. */
+    fun paintPlayerPrimary(view: TextView) {
+        fun paint(focused: Boolean) {
+            view.background =
+                if (focused) shape(view.context, Color.WHITE, Color.TRANSPARENT, 20)
+                else shape(view.context, Color.argb(205, 20, 20, 20), Color.argb(42, 255, 255, 255), 20)
+            view.setTextColor(if (focused) Color.BLACK else Color.WHITE)
+            view.typeface = typeface(true)
+        }
+        paint(false)
+        view.setOnFocusChangeListener { _, focused -> paint(focused) }
+    }
 
     /**
      * Static "aurora" backdrop: deep graphite with restrained blue/pink blooms.

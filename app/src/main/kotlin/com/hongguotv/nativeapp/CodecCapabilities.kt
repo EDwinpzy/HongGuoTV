@@ -64,6 +64,10 @@ object CodecCapabilities {
 
     fun supports(track: VideoTracks.Track) = supports(track.fourcc, track.width, track.height)
 
+    /** Runtime-observed failures only; used to avoid re-forcing a tier that really failed. */
+    fun learnedFailure(info: StreamInfo) = lessons.fails(info.codec, info.width, info.height)
+    fun learnedFailure(track: VideoTracks.Track) = lessons.fails(track.fourcc, track.width, track.height)
+
     /**
      * Records a runtime decode failure; true when the static probe had claimed support
      * (over-reporting). The learned key is codec + coded size when known, so only the

@@ -61,6 +61,7 @@ internal class WebFallbackStreamSource(
                 quality = "360P",
                 codec = "h264",
                 qualityValue = 360,
+                isFallback = true,
             )
         }
     }
