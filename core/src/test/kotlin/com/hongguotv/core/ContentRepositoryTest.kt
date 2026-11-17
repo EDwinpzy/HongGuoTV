@@ -268,6 +268,31 @@ class ContentRepositoryTest {
         assertTrue(repo.home(1,ContentType.SHORT).items.isEmpty())
     }
 
+    @Test fun guestRecommendationsMixAllThreeDramaTypes() {
+        val requests=mutableListOf<Request>()
+        val repo=repository { request ->
+            requests+=request
+            val (id,title)=when(request.url.encodedPath) {
+                "/category/real-drama" -> "101" to "真人剧"
+                "/category/comic-drama" -> "202" to "漫剧"
+                "/category/ai-drama" -> "303" to "AI剧"
+                else -> error("unexpected recommendation fallback path: ${request.url}")
+            }
+            """<script>_ROUTER_DATA={"loaderData":{"category_$":{"isSuccess":true,
+                "recommendList":[{"series_id":"$id","series_name":"$title","series_cover":"https:\\u002F\\u002Fexample.com\\u002F$id.jpg","episode_cnt":12}],
+                "pagination":{"total":48,"pageNum":1,"pageSize":24,"totalPages":2}}}};</script>"""
+        }
+
+        val page=repo.recommendations(1,null,"guest")
+
+        assertEquals(listOf("101","202","303"),page.items.map { it.id })
+        assertEquals(
+            listOf("/category/real-drama","/category/comic-drama","/category/ai-drama"),
+            requests.map { it.url.encodedPath },
+        )
+        assertTrue(page.hasMore)
+    }
+
     @Test fun detailParsesWebsitePage() {
         val repo=repository { request ->
             assertEquals("/detail",request.url.encodedPath)

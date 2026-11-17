@@ -192,6 +192,14 @@ class AccountController(
     private var qrDialog: Dialog? = null
     var onHistoryChanged: (() -> Unit)? = null
 
+    internal fun recommendationCredentials() = credentials?.takeIf { profile != null }
+
+    internal val recommendationLoading
+        get() = !accountRestored || (credentials != null && profile == null && busy)
+
+    internal val recommendationIdentity
+        get() = "$generation:${profile?.id.orEmpty()}:$recommendationLoading"
+
     val signedIn
         get() = credentials != null
 

@@ -37,7 +37,13 @@ class PlaybackDeviceSession(
         val shared = PlaybackDeviceSession()
     }
 
-    internal data class Profile(val values: Map<String, String>, val cookie: String)
+    internal data class Profile(val values: Map<String, String>, val cookie: String) {
+        private var recommendationSigner: Signer? = null
+
+        @Synchronized
+        internal fun recommendationSigner(clock: () -> Long, values: Map<String, String>): Signer =
+            recommendationSigner ?: Signer(clock, values).also { recommendationSigner = it }
+    }
 
     private var cdid = UUID.randomUUID().toString()
     private var ready: Profile? = null

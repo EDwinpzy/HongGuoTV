@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.2（versionCode 10102） |
+| 应用版本 | 1.1.3（versionCode 10103） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -106,6 +106,43 @@
 | 屏幕阅读器与物理遥控器 | NOT_RUN | 加载组件已标记加载语义；本轮只使用 ADB 方向键和截图，未做 TalkBack 或物理遥控器人工验证 |
 
 构建验证：`:app:testDebugUnitTest :core:test` 共 238 项，0 失败、0 错误、9 跳过；`:app:assembleRelease`、`:app:lintVitalRelease` 通过。APK v2 签名校验通过，SHA-256 为 `2B4212B5A1C72164E92558FB4BBEB89DD98FB758A7AC9909CD72730DAA9375FD`。
+
+## 2026-11-17 独立“推荐”标签页与页面头部精简（历史；卡片流已被 2026-11-18 推荐视频流替换）
+
+验证包为 `1.1.2 / 10102`，使用本地 Release 签名覆盖安装；S621 输入均为 ADB 注入。
+
+本地门禁：`:app:testDebugUnitTest :core:test` 共 241 项，0 失败、0 错误、9 跳过；`:app:assembleRelease`、`:app:lintVitalRelease` 通过。APK v2 签名校验通过，SHA-256 为 `2CE2FDD0A5B346BEE386D59300490E7303DAB04E91D96A836B67BA7D391C1000`。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 独立推荐入口 | PASS | 顶部导航新增平级“推荐”，顺序为首页、推荐、短剧、漫剧、AI剧、搜索、榜单、收藏、历史、预约、设置；11 个入口在 1920×1080 下完整显示 |
+| 账号推荐首屏 | PASS | 登录账号走官方签名推荐流，首屏聚合为 14 部、两行 7 列；会员偏好说明缺失时仍能正常出图 |
+| 游客推荐兜底 | PASS（JVM/接口） | 单测覆盖短剧、漫剧、AI剧三类交错混排；匿名接口探针返回 3 部可展示内容。未在已登录设备上清除账号做游客实机验证 |
+| 页面头部精简 | PASS | 推荐、榜单、收藏、历史、预约页的重复大标题和说明行已移除；仅保留“换一批 / 刷新榜单 / 检查更新 / 管理收藏 / 管理记录”等功能入口 |
+| 推荐直接播放 | PASS | 推荐页选中卡片按 OK 后跳过详情页直接启动第一集或续播位置；S621 输出视频画面，暂停/返回正常 |
+| 换一批 | PASS | 按“换一批”后首卡内容变化，重新返回 14 部推荐且焦点落回首卡 |
+| 焦点与返回链 | PASS | 推荐卡片 → “换一批” → 顶部“推荐” → 首页；榜单筛选栏与刷新按钮、收藏和历史的操作按钮焦点未被布局精简破坏 |
+| 推荐续页 | PARTIAL | 本次账号推荐池在 14 部后未再返回新作品；焦点移到第二行后客户端停止追加并保持界面稳定。其他账号的更长推荐池、游客实机续页和长时间连续刷新未验证 |
+
+## 2026-11-18 推荐视频流启动与播放器频道栏（Debug 实机）
+
+验证包使用当前 `codex/recommend-tab` 工作区构建并覆盖安装到 S621；设备输入均为 ADB 注入。本轮重点修复推荐首屏被旧首页骨架和方向键拦截造成的“卡在推荐页”，并在播放条呼出时显示可切换频道的顶部标签栏。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 推荐首屏预热 | PASS | 启动后后台预热账号推荐首屏及首条详情；首次进入日志 `Recommendation start items=6 warmDetail=true elapsedMs=30` |
+| 切换推荐不再卡旧页面 | PASS | 切到“推荐”后立即清除旧首页骨架，进入黑场视频层；180ms 截图显示顶部频道栏，约 4.8 秒后视频首帧出画 |
+| 推荐重复进入 | PASS | 从短剧返回推荐日志 `Recommendation start elapsedMs=30`，约 2.7 秒后视频首帧出画，不再重复等待推荐接口聚合 |
+| 推荐清晰度 | PASS | 推荐播放与预取均使用 1080P；横屏与竖屏片源日志分别确认 `1080P/bytevc1/1920x1080`、`1080P/bytevc1/1080x1920` |
+| 播放条顶部频道栏 | PASS | 推荐预览按 OK 进入正常播放条后，顶部显示首页、推荐、短剧、漫剧、AI剧、搜索、榜单、收藏、历史、预约、设置；按上键可进入频道栏 |
+| 播放中切换频道 | PASS | 播放条呼出后按上键进入频道栏，聚焦“短剧”“搜索”“设置”并按 OK 均能关闭播放器并进入对应页面；短剧页日志 `Display mode restored to system default`，无播放器画面或音频残留 |
+| 推荐预览 MENU 隔离 | PASS | 推荐预览按 MENU 不弹出侧栏；按 OK 进入正常播放器后 MENU 仍打开原选集侧栏 |
+| 推荐首屏缓存 | PASS（单测） | `RecommendationFeedTest.fetchedPagesStayWarmAfterPagingAdvances` 验证第二页推进后再次读取第一、二页不再发起网络请求，返回内容不跳页 |
+| 推荐无缝换片 | PASS | 预览按 ↓ 后旧画面保持到新媒体就绪，日志显示 `Playback first frame episode=2 preloaded=true reused=true elapsedMs=2230` |
+
+本轮实机输入均为 ADB 注入，不是物理遥控器。长时间连续推荐滑动、弱网重试、更多账号推荐池长度和播放中频道切换后的二次播放仍待验证。
+
+最终 1.1.3 Release 候选复测：账号恢复前会预热当前身份，恢复后按账号身份再预热；从短剧返回推荐日志 `elapsedMs=30`，首帧约 `2.7s`，首次进入首帧约 `4.5s`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过，242 项测试、0 失败、0 错误、9 跳过；Release APK/AAB 的最终签名摘要见 v1.1.3 GitHub Release。
 
 ## 未验证或有限制
 
