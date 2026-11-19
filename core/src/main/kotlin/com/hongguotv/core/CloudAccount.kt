@@ -168,7 +168,10 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 // 只暴露固定阶段与传输结果，不携带请求地址、账号、Cookie 或设备身份。
                 val stage = when (path) {
                     "/reading/user/info/v1/" -> "账号资料"
-                    "/reading/bookapi/read_progress/list/v1/" -> "云端历史列表"
+                    "/reading/bookapi/read_history/list/v" -> "云端观看历史"
+                    "/reading/bookapi/read_progress/list/v1/" -> "云端播放进度"
+                    "/reading/bookapi/read_history/update/v" -> "云端观看历史写入"
+                    "/reading/bookapi/read_progress/upload/v1/" -> "云端播放进度写入"
                     "/reading/bookapi/multi-detail/v1/" -> "云端剧集资料"
                     else -> "账号"
                 }
@@ -191,6 +194,53 @@ class CloudAccountClient(private val http: OkHttpClient) {
     }
 
     fun history(credentials: AccountCredentials): List<CloudProgress> {
+        val history = readHistory(credentials)
+        // The legacy progress list remains a compatibility source for rows the
+        // history endpoint has not materialized yet. Newest timestamp wins.
+        val progress = runCatching { readProgressList(credentials) }.getOrNull().orEmpty()
+        val merged = mergeProgress(history, progress)
+        return if (merged.isEmpty()) emptyList() else enrich(credentials, merged)
+    }
+
+    /**
+     * Official video history is separate from playback progress. Reading only
+     * read_progress makes phone-side history invisible on TV, so fetch the real
+     * history list first and page until the local 200-row shelf is covered.
+     */
+    private fun readHistory(credentials: AccountCredentials): List<CloudProgress> {
+        val result = linkedMapOf<String, CloudProgress>()
+        var offset = 0L
+        for (page in 0 until 20) {
+            val payload =
+                json(
+                    credentials,
+                    "/reading/bookapi/read_history/list/v",
+                    mapOf(
+                        "limit" to "0",
+                        "offset" to offset.toString(),
+                        "book_type" to "2",
+                        "full_field" to "false",
+                        "query_soft_deleted" to "false",
+                        "last_min_read_timestamp_ms" to "0",
+                        "is_first_load" to (offset == 0L).toString(),
+                    ),
+                )
+            val data = payload.optJSONObject("data") ?: payload
+            val rows = data.optJSONArray("data_list") ?: throw IOException("云端观看历史数据格式已变化")
+            parseHistory(rows).forEach { row ->
+                val previous = result[row.series.id]
+                if (previous == null || row.updatedAt > previous.updatedAt) result[row.series.id] = row
+            }
+            if (result.size >= 200 || !data.optBoolean("has_more", false)) break
+            if (rows.length() == 0) throw IOException("云端观看历史分页未完整读取")
+            if (page == 19) throw IOException("云端观看历史分页过多，请稍后重试")
+            val next = data.optLong("next_offset", offset + 500)
+            offset = if (next > offset) next else offset + 500
+        }
+        return result.values.sortedByDescending { it.updatedAt }
+    }
+
+    private fun readProgressList(credentials: AccountCredentials): List<CloudProgress> {
         val data =
             json(
                 credentials,
@@ -200,32 +250,67 @@ class CloudAccountClient(private val http: OkHttpClient) {
         val rows =
             data.optJSONArray("video_data")
                 ?: data.optJSONObject("data")?.optJSONArray("video_data")
-                ?: throw IOException("云端历史数据格式已变化")
-        val progress = parseProgress(rows)
-        if (progress.isEmpty()) return emptyList()
-        val details =
-            json(
-                    credentials,
-                    "/reading/bookapi/multi-detail/v1/",
-                    mapOf(
-                        "book_id" to progress.map { it.series.id }.joinToString(","),
-                        "book_type" to "2",
+                ?: throw IOException("云端播放进度数据格式已变化")
+        return parseProgress(rows)
+    }
+
+    private fun mergeProgress(
+        history: List<CloudProgress>,
+        progress: List<CloudProgress>,
+    ): List<CloudProgress> =
+        (history + progress)
+            .groupBy { it.series.id }
+            .values
+            .map { rows ->
+                val newest = rows.maxByOrNull { it.updatedAt }!!
+                val fallback = rows.firstOrNull { it !== newest }?.series
+                newest.copy(
+                    series = newest.series.copy(
+                        title = newest.series.title.ifBlank { fallback?.title.orEmpty() },
+                        cover = newest.series.cover.ifBlank { fallback?.cover.orEmpty() },
+                        description = newest.series.description.ifBlank { fallback?.description.orEmpty() },
+                        badge = newest.series.badge.ifBlank { fallback?.badge.orEmpty() },
                     ),
+                    episodeCount = rows.maxOf { it.episodeCount },
                 )
-                .optJSONArray("data") ?: throw IOException("云端剧集资料格式已变化")
-        val series =
-            details.objects().associate { row ->
-                row.str("book_id") to
-                    Series(
-                        row.str("book_id"),
-                        row.str("book_name"),
-                        coverUrl(row.str("thumb_url")),
-                        row.str("abstract"),
-                        episodeBadge(row),
-                    )
             }
-        return progress.map {
-            it.copy(series = series[it.series.id] ?: it.series.copy(title = "剧集 ${it.series.id}"))
+            .sortedByDescending { it.updatedAt }
+
+    private fun enrich(credentials: AccountCredentials, rows: List<CloudProgress>): List<CloudProgress> {
+        val missing =
+            rows.filter { it.series.title.isBlank() || it.series.cover.isBlank() }
+                .map { it.series.id }
+                .distinct()
+        if (missing.isEmpty()) {
+            return rows.map { row ->
+                if (row.series.title.isBlank()) row.copy(series = row.series.copy(title = "剧集 ${row.series.id}"))
+                else row
+            }
+        }
+        val details =
+            missing.chunked(50).flatMap { batch ->
+                val data =
+                    json(
+                        credentials,
+                        "/reading/bookapi/multi-detail/v1/",
+                        mapOf("book_id" to batch.joinToString(","), "book_type" to "2"),
+                    ).optJSONArray("data") ?: throw IOException("云端剧集资料格式已变化")
+                data.objects()
+            }.associateBy { it.str("book_id") }
+        return rows.map { row ->
+            val detail = details[row.series.id]
+            val series =
+                if (detail == null) {
+                    row.series.copy(title = row.series.title.ifBlank { "剧集 ${row.series.id}" })
+                } else {
+                    row.series.copy(
+                        title = row.series.title.ifBlank { detail.str("book_name") },
+                        cover = row.series.cover.ifBlank { coverUrl(detail.str("thumb_url")) },
+                        description = row.series.description.ifBlank { detail.str("abstract") },
+                        badge = row.series.badge.ifBlank { episodeBadge(detail) },
+                    )
+                }
+            row.copy(series = series, episodeCount = row.episodeCount.coerceAtLeast(parseCount(series.badge)))
         }
     }
 
@@ -338,6 +423,45 @@ class CloudAccountClient(private val http: OkHttpClient) {
             progress.series.id.matches(Regex("[0-9]{1,30}")) &&
                 progress.episodeId.matches(Regex("[0-9]{1,30}"))
         )
+        val count = episodeCount.coerceAtLeast(progress.episodeCount)
+        val stamp = progress.updatedAt
+        val history =
+            JSONObject()
+                .put("book_id", numericId(progress.series.id))
+                .put("book_type", 2)
+                .put("vid", numericId(progress.episodeId))
+                .put("vid_index", progress.episodeIndex + 1)
+                .put("chapter_index", 0)
+                .put("current_play_position", progress.position.coerceAtLeast(0))
+                .put("player_accumulate_total_time", progress.position.coerceAtLeast(0))
+                .put("read_timestamp_ms", stamp)
+                .put("update_timestamp_ms", stamp)
+                .put("is_delete", false)
+                .put("is_interactive_game", false)
+                .put("is_listen_mode", false)
+                .put("is_multi_season", 0)
+                .put("season_index", 0)
+                .put("duration", progress.duration.coerceAtLeast(0))
+                .put("episode_cnt", count)
+                .put("digged_count", 0)
+                .put("user_digg", false)
+                .put("origin_novel_book_id", 0)
+                .put("recent_reads", 0)
+                .put("retain_video_play_time", 0)
+                .put("series_play_cnt", 0)
+                .put("tone_id", 0)
+                .put("use_soft_delete", false)
+                .put("meet_guide_comment_tag", false)
+                .put("user_playlet_comment_flag", false)
+        try {
+            json(
+                credentials,
+                "/reading/bookapi/read_history/update/v",
+                body = JSONObject().put("update_datas", JSONArray().put(history)).toString().toByteArray(),
+            )
+        } catch (error: IOException) {
+            throw IOException("云端观看历史写入失败：${error.message}", error)
+        }
         val entry =
             JSONObject()
                 .put("book_id", progress.series.id)
@@ -345,7 +469,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 .put("vid_index", progress.episodeIndex + 1)
                 .put("current_play_time", progress.position.coerceAtLeast(0))
                 .put("current_total_time", progress.duration.coerceAtLeast(0))
-                .put("episode_count", episodeCount)
+                .put("episode_count", count)
                 .put("read_timestamp_ms", progress.updatedAt)
                 .put("book_type", 2)
                 .put(
@@ -357,16 +481,33 @@ class CloudAccountClient(private val http: OkHttpClient) {
                     else "0",
                 )
                 .put("player_cumulative_total_duration", progress.position.coerceAtLeast(0))
+                .put("progress_type", 0)
+                .put("channel_id", 0)
+                .put("cur_channel_id", 0)
+                .put("check_timestamp", false)
+                .put("is_listen_mode", false)
+                .put("is_local_book", false)
+                .put("listen_and_read", false)
+                .put("page_index", 0)
+                .put("page_progress_rate", 0)
+                .put("paragraph_offset", 0)
+                .put("tone_id", 0)
         val body =
             JSONObject()
                 .put("books", JSONArray().put(entry))
                 .put("write_mode", 1)
                 .toString()
                 .toByteArray()
-        json(credentials, "/reading/bookapi/read_progress/upload/v1/", body = body)
+        try {
+            json(credentials, "/reading/bookapi/read_progress/upload/v1/", body = body)
+        } catch (error: IOException) {
+            throw IOException("云端播放进度写入失败：${error.message}", error)
+        }
     }
 
     companion object {
+        private fun numericId(value: String): Any = value.toLongOrNull() ?: value
+
         private fun episodeBadge(row: JSONObject): String {
             val count =
                 listOf("episode_cnt", "episode_count", "drama_chapter_number")
@@ -519,9 +660,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
                     if (!id.matches(Regex("[0-9]{1,30}")) || !episode.matches(Regex("[0-9]{1,30}")))
                         return@mapNotNull null
                     val stamp =
-                        row.optLong("last_watch_time").let {
-                            if (it in 1..9999999999L) it * 1000 else it
-                        }
+                        timestamp(row)
                     CloudProgress(
                         Series(id, ""),
                         episode,
@@ -534,5 +673,60 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 }
                 .distinctBy { it.series.id }
                 .sortedByDescending { it.updatedAt }
+
+        fun parseHistory(rows: JSONArray): List<CloudProgress> =
+            rows
+                .objects()
+                .mapNotNull { row ->
+                    val id = row.str("book_id_str").ifBlank { row.str("book_id") }
+                    val episode = row.str("vid").ifBlank { row.str("item_id") }
+                    if (!id.matches(Regex("[0-9]{1,30}")) ||
+                        !episode.matches(Regex("[0-9]{1,30}")) ||
+                        row.optBoolean("is_delete", false)
+                    ) {
+                        return@mapNotNull null
+                    }
+                    val stamp = timestamp(row)
+                    if (stamp <= 0) return@mapNotNull null
+                    val count =
+                        firstPositive(row, "episode_cnt", "episode_count", "drama_chapter_number")
+                    val title = row.str("book_name").ifBlank { row.str("series_title") }
+                    val badge = if (count > 0) "全 $count 集" else ""
+                    CloudProgress(
+                        Series(
+                            id,
+                            title,
+                            coverUrl(row.str("thumb_url").ifBlank { row.str("series_cover_url") }),
+                            row.str("abstract").ifBlank { row.str("series_intro") },
+                            badge,
+                        ),
+                        episode,
+                        (row.optInt("vid_index", 1) - 1).coerceAtLeast(0),
+                        firstNonNegative(row, "current_play_position", "current_play_time", "player_accumulate_total_time"),
+                        firstNonNegative(row, "duration", "current_total_time"),
+                        stamp,
+                        count,
+                    )
+                }
+                .distinctBy { it.series.id }
+                .sortedByDescending { it.updatedAt }
+
+        private fun timestamp(row: JSONObject): Long {
+            val value =
+                listOf("read_timestamp_ms", "update_timestamp_ms", "last_watch_time")
+                    .map { row.optLong(it) }
+                    .firstOrNull { it > 0 } ?: 0L
+            return if (value in 1..9_999_999_999L) value * 1000 else value
+        }
+
+        private fun firstPositive(row: JSONObject, vararg keys: String): Int =
+            keys.map { row.optInt(it) }.firstOrNull { it > 0 } ?: 0
+
+        private fun firstNonNegative(row: JSONObject, vararg keys: String): Long =
+            keys.mapNotNull { key -> if (row.has(key)) row.optLong(key) else null }
+                .firstOrNull { it >= 0 } ?: 0L
+
+        private fun parseCount(badge: String): Int =
+            Regex("(\\d{1,5})").find(badge)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     }
 }

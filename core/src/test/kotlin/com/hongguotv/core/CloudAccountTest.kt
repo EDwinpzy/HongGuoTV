@@ -47,6 +47,22 @@ class CloudAccountTest {
     }
 
     @Test
+    fun historyParsesOfficialHistoryShapeAndCover() {
+        val rows =
+            JSONArray(
+                """[{"book_id_str":"123","book_name":"手机看过","thumb_url":"https://example.com/a.jpg","vid":"456","vid_index":4,"current_play_position":32100,"duration":90000,"read_timestamp_ms":1792500000123,"episode_cnt":20}]"""
+            )
+        val result = CloudAccountClient.parseHistory(rows).single()
+        assertEquals("手机看过", result.series.title)
+        assertEquals("https://example.com/a.jpg", result.series.cover)
+        assertEquals("全 20 集", result.series.badge)
+        assertEquals(3, result.episodeIndex)
+        assertEquals(32100L, result.position)
+        assertEquals(20, result.episodeCount)
+        assertEquals(1792500000123L, result.updatedAt)
+    }
+
+    @Test
     fun accountProfileRejectsAnonymousFallbackInsteadOfPretendingLoginSucceeded() {
         val client =
             CloudAccountClient(
@@ -64,14 +80,20 @@ class CloudAccountTest {
 
     @Test
     fun historyEmptyResponsesIdentifyTheFailingStageWithoutLeakingIdentity() {
-        for (failureStage in listOf("read_progress", "multi-detail")) {
+        for (failureStage in listOf("read_history", "multi-detail")) {
             val client = CloudAccountClient(http { request ->
-                if (request.url.encodedPath.contains(failureStage)) ""
-                else """{"code":0,"video_data":[{"series_id":"123","vid":"456","vid_index":2}]}"""
+                when {
+                    request.url.encodedPath.contains(failureStage) -> ""
+                    request.url.encodedPath.contains("read_history") ->
+                        """{"code":0,"data":{"data_list":[{"book_id_str":"123","vid":"456","vid_index":2,"read_timestamp_ms":1792500000000}],"has_more":false}}"""
+                    request.url.encodedPath.contains("read_progress") ->
+                        """{"code":0,"video_data":[]}"""
+                    else -> """{"code":0,"data":[{"book_id":"123","book_name":"剧名"}]}"""
+                }
             })
             val error = assertThrows(IOException::class.java) { client.history(credentials) }
             val message = error.message.orEmpty()
-            assertTrue(message.contains(if (failureStage == "read_progress") "云端历史列表" else "云端剧集资料"))
+            assertTrue(message.contains(if (failureStage == "read_history") "云端观看历史" else "云端剧集资料"))
             assertTrue(message.contains("HTTP 200/0B/h1"))
             assertFalse(message.contains(credentials.cookie))
             assertFalse(message.contains(credentials.deviceId))
@@ -81,43 +103,121 @@ class CloudAccountTest {
 
     @Test
     fun historyLoadsMetadataWithoutLosingPlaybackPosition() {
+        val paths = mutableListOf<String>()
         val client =
             CloudAccountClient(
                 http { request ->
+                    paths += request.url.encodedPath
                     assertEquals("sessionid=test-only", request.header("Cookie"))
                     assertEquals(credentials.deviceId, request.url.queryParameter("device_id"))
-                    if (request.url.encodedPath.contains("read_progress"))
-                        """{"code":0,"video_data":[{"series_id":"123","vid":"456","vid_index":2,"current_play_time":12000}]}"""
-                    else """{"code":0,"data":[{"book_id":"123","book_name":"云端测试剧"}]}"""
+                    when {
+                        request.url.encodedPath.contains("read_history") ->
+                            """{"code":0,"data":{"data_list":[{"book_id_str":"123","book_name":"云端测试剧","thumb_url":"https://example.com/a.jpg","vid":"456","vid_index":2,"current_play_position":12000,"read_timestamp_ms":1792500000000}],"has_more":false}}"""
+                        request.url.encodedPath.contains("read_progress") ->
+                            """{"code":0,"video_data":[]}"""
+                        else -> """{"code":0,"data":[{"book_id":"123","book_name":"云端测试剧"}]}"""
+                    }
                 }
             )
         val row = client.history(credentials).single()
         assertEquals("云端测试剧", row.series.title)
         assertEquals(12000L, row.position)
+        assertEquals("/reading/bookapi/read_history/list/v", paths.first())
+        assertTrue(paths.any { it == "/reading/bookapi/read_progress/list/v1/" })
+    }
+
+    @Test
+    fun historyPagesUntilTheLocalShelfIsCovered() {
+        val offsets = mutableListOf<String>()
+        val client =
+            CloudAccountClient(
+                http { request ->
+                    if (request.url.encodedPath.contains("read_progress")) {
+                        """{"code":0,"video_data":[]}"""
+                    } else {
+                        offsets += request.url.queryParameter("offset").orEmpty()
+                        if (request.url.queryParameter("offset") == "0") {
+                            """{"code":0,"data":{"data_list":[
+                                {"book_id_str":"1","book_name":"一","thumb_url":"https://example.com/1.jpg","vid":"11","vid_index":1,"current_play_position":1000,"duration":9000,"read_timestamp_ms":1792500000000},
+                                {"book_id_str":"2","book_name":"二","thumb_url":"https://example.com/2.jpg","vid":"22","vid_index":1,"current_play_position":2000,"duration":9000,"read_timestamp_ms":1792500001000}
+                            ],"has_more":true,"next_offset":2}}"""
+                        } else {
+                            """{"code":0,"data":{"data_list":[
+                                {"book_id_str":"3","book_name":"三","thumb_url":"https://example.com/3.jpg","vid":"33","vid_index":1,"current_play_position":3000,"duration":9000,"read_timestamp_ms":1792500002000}
+                            ],"has_more":false}}"""
+                        }
+                    }
+                }
+            )
+        val rows = client.history(credentials)
+        assertEquals(listOf("0", "2"), offsets)
+        assertEquals(listOf("3", "2", "1"), rows.map { it.series.id })
+    }
+
+    @Test
+    fun newerProgressKeepsHistoryMetadata() {
+        val client =
+            CloudAccountClient(
+                http { request ->
+                    when {
+                        request.url.encodedPath.contains("read_history") ->
+                            """{"code":0,"data":{"data_list":[
+                                {"book_id_str":"123","book_name":"历史剧名","thumb_url":"https://example.com/a.jpg","vid":"456","vid_index":2,"current_play_position":1000,"duration":90000,"read_timestamp_ms":1792500000000}
+                            ],"has_more":false}}"""
+                        request.url.encodedPath.contains("read_progress") ->
+                            """{"code":0,"video_data":[
+                                {"series_id":"123","vid":"789","vid_index":4,"current_play_time":40000,"current_total_time":90000,"read_timestamp_ms":1792500009000}
+                            ]}"""
+                        else -> error("unexpected metadata request")
+                    }
+                }
+            )
+        val row = client.history(credentials).single()
+        assertEquals("历史剧名", row.series.title)
+        assertEquals("https://example.com/a.jpg", row.series.cover)
+        assertEquals("789", row.episodeId)
+        assertEquals(3, row.episodeIndex)
+        assertEquals(40000L, row.position)
+        assertEquals(1792500009000L, row.updatedAt)
     }
 
     @Test
     fun uploadingProgressUsesCurrentSessionAndOneBasedEpisodeIndex() {
-        var calls = 0
+        val paths = mutableListOf<String>()
         val client =
             CloudAccountClient(
                 http { request ->
-                    calls++
+                    paths += request.url.encodedPath
                     assertEquals("api5-normal-sinfonlinea.fqnovel.com", request.url.host)
                     assertEquals("sessionid=test-only", request.header("Cookie"))
                     assertEquals(credentials.deviceId, request.url.queryParameter("device_id"))
-                    assertEquals(
-                        "/reading/bookapi/read_progress/upload/v1/",
-                        request.url.encodedPath,
-                    )
                     val buffer = okio.Buffer()
                     request.body!!.writeTo(buffer)
                     val body = JSONObject(buffer.readUtf8())
-                    val book = body.getJSONArray("books").getJSONObject(0)
-                    assertEquals(1, body.getInt("write_mode"))
-                    assertEquals(3, book.getInt("vid_index"))
-                    assertEquals(43210L, book.getLong("current_play_time"))
-                    assertEquals("456", book.getString("item_id"))
+                    when (request.url.encodedPath) {
+                        "/reading/bookapi/read_history/update/v" -> {
+                            val history = body.getJSONArray("update_datas").getJSONObject(0)
+                            assertEquals(123L, history.getLong("book_id"))
+                            assertEquals(456L, history.getLong("vid"))
+                            assertEquals(3, history.getInt("vid_index"))
+                            assertEquals(43210L, history.getLong("current_play_position"))
+                            assertEquals(90000L, history.getLong("duration"))
+                            assertEquals(8, history.getInt("episode_cnt"))
+                            assertEquals(0, history.getInt("is_multi_season"))
+                            assertTrue(history.getBoolean("user_digg") == false)
+                            assertTrue(history.getBoolean("meet_guide_comment_tag") == false)
+                            assertTrue(history.getBoolean("user_playlet_comment_flag") == false)
+                        }
+                        "/reading/bookapi/read_progress/upload/v1/" -> {
+                            val book = body.getJSONArray("books").getJSONObject(0)
+                            assertEquals(1, body.getInt("write_mode"))
+                            assertEquals(3, book.getInt("vid_index"))
+                            assertEquals(43210L, book.getLong("current_play_time"))
+                            assertEquals("456", book.getString("item_id"))
+                            assertTrue(book.getBoolean("check_timestamp") == false)
+                        }
+                        else -> fail("unexpected upload path ${request.url.encodedPath}")
+                    }
                     """{"code":0}"""
                 }
             )
@@ -126,7 +226,13 @@ class CloudAccountTest {
             CloudProgress(Series("123", "测试"), "456", 2, 43210, 90000, 1792500000000),
             8,
         )
-        assertEquals(1, calls)
+        assertEquals(
+            listOf(
+                "/reading/bookapi/read_history/update/v",
+                "/reading/bookapi/read_progress/upload/v1/",
+            ),
+            paths,
+        )
     }
 
     @Test
