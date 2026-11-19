@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.4（versionCode 10104） |
+| 应用版本 | 1.1.5（versionCode 10105） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -195,6 +195,21 @@
 | 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
 
 限制：本轮没有直接操作手机红果 App 的“观看历史”页面。已确认电视读取完整云端历史、历史/进度双写成功且重启后可从云端回读；手机端最终展示仍需用户在同一账号下人工核对。物理遥控器未使用，按键均为 ADB 注入。
+
+## 2026-11-19 v1.1.5 Release 发布验证
+
+版本升级为 `1.1.5 / 10105`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；255 项测试、0 失败、0 错误、9 跳过。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| Release 覆盖安装 | PASS | S621 从 `1.1.4 / 10104` 覆盖安装 `1.1.5 / 10105` Release，应用数据与登录态保留；冷启动约 0.7 秒进入首页 |
+| 完整历史同步 | PASS | 启动后日志为 `auto sync history=500 favorites=12`，历史页正常显示云端观看记录及集数、进度 |
+| 播放与进度双写 | PASS | 从历史页播放《千年待我归》第 1 集，实际出画；日志 `upload result=true err=-`，进度持续上报到约 49 秒 |
+| 稳定性 | PASS | 启动、同步、播放与返回过程中无 `FATAL EXCEPTION` / `ANR` |
+| 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
+| 产物摘要 | PASS | APK SHA-256 `D2C30FA726EA9ECFE571DA32B74D12162878FA73894ADD707A3190F739B58266`；AAB SHA-256 `4286D9AB9C5914464D9E59DC9FDB96259D0EEC6544D201CE2DB82CD5AA4E3137` |
+
+限制：本轮仍未直接操作手机红果 App 的“观看历史”页面，手机端最终展示需在同一账号下人工核对；S621 输入均为 ADB 注入，未使用物理遥控器。
 
 ## 未验证或有限制
 
