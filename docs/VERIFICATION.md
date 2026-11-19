@@ -181,6 +181,21 @@
 | Release 稳定性 | PASS | 切入、返回和播放均正常，日志无 `FATAL EXCEPTION` / `ANR` |
 | 产物摘要 | PASS | 正式包 APK SHA-256 `FC3A38F504F48C7038F6130F350C6729190D3042AD9A61BD73AC9FF5BCECD689`；AAB SHA-256 `3491364B8B4333751ABA6595275AE596E9716F1279CABFCCCF24DEDE3AD6AD39` |
 
+## 2026-11-19 账号观看历史与播放进度双端同步
+
+验证包基于 `1.1.4 / 10104` 任务分支构建，使用原 Release 签名覆盖安装到 S621；输入仍为 ADB 注入。本轮修复“电视历史和手机历史互不同步”：历史读取改用 `/reading/bookapi/read_history/list/v`，播放进度继续兼容 `/read_progress/list/v1/`；上报时先写 `/read_history/update/v`，再写 `/read_progress/upload/v1/`。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 云端完整历史读取 | PASS | 修复前启动日志为 `auto sync history=50`；修复后为 `auto sync history=500 favorites=11`，说明电视已能读取手机历史列表而不只是 50 条进度窗口 |
+| 历史与进度双写 | PASS | 播放《大唐：这小子路子太野》后日志为 `upload result=true err=-`；首次实测的错误 `100103` 已定位为 `is_multi_season` 应为整数，修正后上报成功 |
+| 云端回读闭环 | PASS | 强制停止并重启后重新同步，首页“接着看”显示该剧第 9 集、`00:19`，确认更新后的集数和秒数已从云端重新取得 |
+| 历史合并与去重 | PASS（单测） | 覆盖历史分页、历史与进度较新者合并、保留历史标题/封面、本机较新时上传、同时间戳不反复上传，以及删除 tombstone 阻止复活 |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；255 项测试、0 失败、0 错误、9 跳过 |
+| 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
+
+限制：本轮没有直接操作手机红果 App 的“观看历史”页面。已确认电视读取完整云端历史、历史/进度双写成功且重启后可从云端回读；手机端最终展示仍需用户在同一账号下人工核对。物理遥控器未使用，按键均为 ADB 注入。
+
 ## 未验证或有限制
 
 | 项目 | 状态 | 说明 |

@@ -1189,32 +1189,27 @@ class AccountController(
                 )
                 if (rows != null) {
                     historyLoaded = true
-                    history =
-                        rows.distinctBy { it.series.id }.sortedByDescending { it.updatedAt }.take(50)
+                    val cloudRows =
+                        rows.distinctBy { it.series.id }.sortedByDescending { it.updatedAt }.take(200)
+                    history = cloudRows.take(50)
                     status = "云端记录已自动同步 · ${history.size} 部观看记录"
                     // Two-way history sync: fold every cloud checkpoint into the local shelf.
                     // Newest timestamp wins; local-only entries (never in the cloud) survive.
                     // Rows the user deleted here are tombstoned and stay out (the phone's
                     // copy must not resurrect them).
                     val deleted = store.deletedHistory()
-                    history.forEach { cloud ->
-                        if (cloud.series.id in deleted) return@forEach
-                        val local = library.progress(cloud.series.id)
-                        val cloudNewer = local == null || cloud.updatedAt > local.updatedAt
-                        if (cloudNewer && !library.watched(cloud.series.id)) {
-                            library.save(
-                                WatchProgress(
-                                    cloud.series, cloud.episodeId, cloud.episodeIndex,
-                                    cloud.position, cloud.duration, false, cloud.updatedAt,
-                                )
-                            )
+                    val plan = CloudHistorySync.plan(cloudRows, library.history(), deleted)
+                    plan.apply.forEach { progress ->
+                        library.save(progress)
+                        if (library.watched(progress.series.id)) {
+                            library.setWatched(progress.series.id, false)
                         }
                     }
+                    syncHistory(account, plan.upload)
                 } else {
                     status = "云端观看记录读取失败，稍后重试"
                 }
                 if (cloudFavorites != null) syncFavorites(account, cloudFavorites)
-                if (rows != null) syncHistory(account, history)
                 changed()
             },
             {
@@ -1275,18 +1270,8 @@ class AccountController(
         store.saveSyncedFavorites((localIds + cloudIds).toSet())
     }
 
-    /**
-     * TV→phone history push: local watch progress the cloud has never seen (series the
-     * TV played before login, or while signed out) uploads once per series. The cloud
-     * list is capped at 50, so a series missing from it may simply be beyond the window
-     * — pushing it again is harmless (same checkpoint, server-side newest-wins).
-     * Tombstoned rows (deleted here) never push back.
-     */
-    private fun syncHistory(account: AccountCredentials, cloud: List<CloudProgress>) {
-        val cloudIds = cloud.map { it.series.id }.toSet()
-        val deleted = store.deletedHistory()
-        val push =
-            library.history().filter { it.series.id !in cloudIds && it.series.id !in deleted && it.episodeId.isNotBlank() }
+    /** TV→phone history push: upload local rows newer than the cloud snapshot. */
+    private fun syncHistory(account: AccountCredentials, push: List<CloudProgress>) {
         if (push.isEmpty()) return
         worker.execute {
             var failed = 0
@@ -1295,15 +1280,8 @@ class AccountController(
                     runCatching {
                         client.upload(
                             account,
-                            CloudProgress(
-                                progress.series,
-                                progress.episodeId,
-                                progress.episodeIndex,
-                                progress.position,
-                                progress.duration,
-                                progress.updatedAt,
-                            ),
-                            0,
+                            progress,
+                            progress.episodeCount,
                         )
                     }
                 if (result.isFailure) failed++
