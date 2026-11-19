@@ -46,7 +46,6 @@ class MainActivity: Activity() {
     private val networkCleanup=Executors.newSingleThreadExecutor()
     private val prefetchWorker=Executors.newSingleThreadExecutor()
     private val catalogPrefetchWorker=Executors.newSingleThreadExecutor()
-    private val recommendationWarmWorker=Executors.newSingleThreadExecutor()
     private var catalogPrefetchJob: java.util.concurrent.Future<*>?=null
     private var catalogPrefetchEpoch=0
     private var playbackHttp: okhttp3.OkHttpClient?=null
@@ -121,12 +120,6 @@ class MainActivity: Activity() {
     private var recommendationStreamEpoch=0
     private var recommendationStreamPlan=""
     private var recommendationStreamRetryAt=0L
-    /** Silent first-page/detail warm-up so opening the tab does not wait on the feed API. */
-    private var recommendationWarmJob: java.util.concurrent.Future<*>?=null
-    private var recommendationWarmIdentity=""
-    private var recommendationWarmStartedAt=0L
-    private var recommendationWarmDetail: Detail?=null
-    private var recommendationWarmDetailIdentity=""
     /** The preview feed starts at 1080P even when the normal-player setting is lower. */
     private var recommendationQuality=1080
     /** Bottom title/synopsis card shown while the recommendation feed is in preview playback. */
@@ -374,7 +367,6 @@ class MainActivity: Activity() {
                     recommendationIdentity!=cloudAccount.recommendationIdentity) {
                     showCatalog(true)
                 }
-                if(!recommendationFeedMode) warmRecommendationFeed()
             }
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
@@ -479,7 +471,6 @@ class MainActivity: Activity() {
             // App start: the first screen is the home tab with focus on the top nav "首页".
             if(!isDestroyed && foreground) {
                 showCatalog(load=true,focusNav=true); favoriteMonitor.check()
-                warmRecommendationFeed(force=true)
             }
         }
     }
@@ -524,53 +515,9 @@ class MainActivity: Activity() {
             repository.recommendations(repositoryPage,account,identity)
         } catch(problem: java.io.IOException) {
             if(problem.message?.contains("推荐已刷新")!=true) throw problem
-            repository.resetRecommendations()
+            repository.beginRecommendationBatch(account,identity)
             repository.recommendations(1,account,identity)
         }
-    /**
-     * Warm the recommendation page-1 feed and its first detail while the user is still
-     * on another tab. The repository keeps page 1 for the account session, so a later
-     * tab switch can start without repeating the slow feed aggregation request.
-     */
-    private fun warmRecommendationFeed(force: Boolean=false) {
-        if(!foreground || isDestroyed || recommendationFeedMode) return
-        if(recommendationWarmJob?.isDone==false) return
-        val identity=cloudAccount.recommendationIdentity
-        val account=cloudAccount.recommendationCredentials()
-        val now=android.os.SystemClock.elapsedRealtime()
-        if(!force && identity==recommendationWarmIdentity &&
-            (recommendationWarmDetailIdentity==identity || now-recommendationWarmStartedAt<30_000)) return
-        recommendationWarmIdentity=identity
-        recommendationWarmStartedAt=now
-        recommendationWarmJob=recommendationWarmWorker.submit {
-            val started=android.os.SystemClock.elapsedRealtime()
-            try {
-                val page=fetchRecommendationPage(1,account,identity)
-                val first=page.items.firstOrNull()
-                val data=first?.let { runCatching { repository.detail(it.id,ContentType.SHORT) }.getOrNull() }
-                main.post {
-                    if(!foreground || isDestroyed || identity!=cloudAccount.recommendationIdentity) return@post
-                    if(data!=null) {
-                        recommendationWarmDetail=data
-                        recommendationWarmDetailIdentity=identity
-                    }
-                    android.util.Log.i(
-                        "HongguoTV",
-                        "Recommendation warm items=${page.items.size} detail=${data!=null} "+
-                            "elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}",
-                    )
-                }
-            } catch(problem: Exception) {
-                main.post {
-                    if(isDestroyed) return@post
-                    android.util.Log.i(
-                        "HongguoTV",
-                        "Recommendation warm skipped after ${android.os.SystemClock.elapsedRealtime()-started}ms: ${problem.message}",
-                    )
-                }
-            }
-        }
-    }
     private fun base(title: String?=null): LinearLayout {
         root.removeAllViews(); root.background=TvStyle.backdrop()
         loadingOverlay=null
@@ -776,8 +723,8 @@ class MainActivity: Activity() {
         if(next==4) { tvQuery=""; tvSuggests=emptyList(); tvResultQuery=""; catalog=emptyList(); hasMore=false; query="" }
         // Focus arrived on another nav button (D-pad left/right): the page switches under
         // it, focus stays on that nav button. focusNav keeps the grid from stealing focus.
-        if(navSwitchFocus) { navSwitchFocus=false; showCatalog(load=(next!=4 && catalog.isEmpty() && !localCatalog()),focusNav=true) }
-        else showCatalog(load=(next!=4 && next!=9 && !localCatalog() && catalog.isEmpty()))
+        if(navSwitchFocus) { navSwitchFocus=false; showCatalog(load=(next!=4 && catalog.isEmpty() && !localCatalog()),focusNav=true,freshRecommendation=next==TAB_RECOMMEND) }
+        else showCatalog(load=(next!=4 && next!=9 && !localCatalog() && catalog.isEmpty()),freshRecommendation=next==TAB_RECOMMEND)
     }
     private fun leaveCollection() {
         if(collection==null) return
@@ -844,13 +791,13 @@ class MainActivity: Activity() {
             setPadding(0,dp(8),0,dp(14)); gravity=Gravity.CENTER
         })
         val actions=row()
-        val retry=addButton(actions,"重试") { enterRecommendationFeed() }
+        val retry=addButton(actions,"重试") { enterRecommendationFeed(fresh=true) }
         addButton(actions,"返回首页") { exitRecommendationFeed() }
         panel.addView(actions)
         root.addView(panel,FrameLayout.LayoutParams(dp(560),-2,Gravity.CENTER))
         retry.requestFocus()
     }
-    private fun enterRecommendationFeed() {
+    private fun enterRecommendationFeed(fresh: Boolean=false) {
         recommendationFeedMode=false
         cancelRecommendationFeedJobs()
         recommendationFeedItems=emptyList(); recommendationFeedIndex=-1
@@ -866,14 +813,14 @@ class MainActivity: Activity() {
         showRecommendationFeedLoading()
         recommendationIdentity=cloudAccount.recommendationIdentity
         val account=cloudAccount.recommendationCredentials(); val identity=recommendationIdentity
-        val warm=recommendationWarmDetail?.takeIf { recommendationWarmDetailIdentity==identity }
         val started=android.os.SystemClock.elapsedRealtime()
         work({
+            if(fresh) repository.beginRecommendationBatch(account,identity)
             fetchRecommendationPage(1,account,identity)
         }, { page ->
             if(!recommendationFeedMode || tab!=TAB_RECOMMEND) return@work
             if(identity!=cloudAccount.recommendationIdentity) {
-                enterRecommendationFeed()
+                enterRecommendationFeed(fresh=true)
                 return@work
             }
             val items=page.items.distinctBy { it.id }
@@ -881,13 +828,12 @@ class MainActivity: Activity() {
                 showRecommendationFeedError(java.io.IOException("暂时没有可播放的推荐"))
                 return@work
             }
-            warm?.takeIf { detail -> items.any { it.id==detail.series.id } }?.let(::rememberRecommendationFeedDetail)
             recommendationFeedItems=items
             recommendationFeedPage=1
             recommendationFeedHasMore=page.hasMore
             android.util.Log.i(
                 "HongguoTV",
-                "Recommendation start items=${items.size} warmDetail=${warm!=null} "+
+                "Recommendation start items=${items.size} fresh=$fresh first=${items.first().id} "+
                     "elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}",
             )
             playRecommendationFeedItem(0)
@@ -903,7 +849,7 @@ class MainActivity: Activity() {
                 main.post {
                     if(!recommendationFeedMode || session!=recommendationFeedSession) return@post
                     if(identity!=cloudAccount.recommendationIdentity) {
-                        enterRecommendationFeed()
+                        enterRecommendationFeed(fresh=true)
                         return@post
                     }
                     recommendationFeedPageJob=null
@@ -924,7 +870,7 @@ class MainActivity: Activity() {
                 main.post {
                     if(!recommendationFeedMode || session!=recommendationFeedSession) return@post
                     if(identity!=cloudAccount.recommendationIdentity) {
-                        enterRecommendationFeed()
+                        enterRecommendationFeed(fresh=true)
                         return@post
                     }
                     recommendationFeedPageJob=null; recommendationFeedHasMore=false
@@ -1142,8 +1088,8 @@ class MainActivity: Activity() {
         showCatalog(load=catalog.isEmpty(),focusNav=true)
         navFor(0).requestFocus()
     }
-    private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false) {
-        if(tab==TAB_RECOMMEND) { enterRecommendationFeed(); return }
+    private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false,freshRecommendation: Boolean=false) {
+        if(tab==TAB_RECOMMEND) { enterRecommendationFeed(freshRecommendation); return }
         initialCatalogPending=false; restoreStoppedPage=false; pendingDetail=null
         var fetch=load
         // Session cache (10 min TTL): a fresh cached list renders directly without
@@ -3876,7 +3822,6 @@ class MainActivity: Activity() {
     }
     override fun onStop() {
         restoreStoppedPage=true; generation++; cancelWork(); cancelRecommendationFeedJobs(); cancelCatalogPrefetch()
-        recommendationWarmJob?.cancel(true); recommendationWarmJob=null
         tvTools.close()
         if(screen=="player") { startPosition=currentPosition(); saveProgress(); releasePlayer() }
         artwork.cancelPage(clearMemory=true); library.flush(); super.onStop()
@@ -3892,9 +3837,9 @@ class MainActivity: Activity() {
         favoriteMonitor.destroy(); tvTools.destroy(); updater.destroy(); saveProgress(); releasePlayer(); library.close()
         if(::cloudAccount.isInitialized) cloudAccount.destroy()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
-        cancelCatalogPrefetch(); recommendationWarmJob?.cancel(true); recommendationWarmJob=null
+        cancelCatalogPrefetch()
         io.shutdownNow(); prefetchWorker.shutdownNow(); catalogPrefetchWorker.shutdownNow()
-        recommendationWarmWorker.shutdownNow(); networkCleanup.shutdown()
+        networkCleanup.shutdown()
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()
     }

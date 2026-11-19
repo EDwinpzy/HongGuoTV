@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -116,13 +117,19 @@ class RecommendationFeedTest {
         assertEquals(2,feed.cursor.expectedPage)
     }
 
-    @Test fun fetchedPagesStayWarmAfterPagingAdvances() {
+    @Test fun resetStartsNewBatchWithoutReplayingSeenItems() {
         val requests=mutableListOf<Request>()
+        var calls=0
         val http=OkHttpClient.Builder().addInterceptor { chain ->
             val request=chain.request()
             requests+=request
-            val offset=request.url.queryParameter("offset")?.toIntOrNull() ?: 0
-            val body=feedBody(if(offset==0) listOf("301","302") else listOf("303","304"))
+            calls++
+            val ids=when(calls) {
+                1 -> listOf("301","302")
+                2 -> listOf("303","304")
+                else -> listOf("301","302","305","306")
+            }
+            val body=feedBody(ids)
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(body.toResponseBody()).build()
         }.build()
@@ -138,13 +145,15 @@ class RecommendationFeedTest {
 
         val first=feed.page(1)
         val second=feed.page(2)
-        val reopened=feed.page(1)
-        val reopenedSecond=feed.page(2)
+        feed.reset()
+        val refreshed=feed.page(1)
 
         assertEquals(listOf("301","302"),first.items.map { it.id })
-        assertEquals(first.items.map { it.id },reopened.items.map { it.id })
-        assertEquals(second.items.map { it.id },reopenedSecond.items.map { it.id })
-        assertEquals(2,requests.size)
+        assertEquals(listOf("303","304"),second.items.map { it.id })
+        assertEquals(listOf("305","306"),refreshed.items.map { it.id })
+        assertEquals(3,requests.size)
+        assertEquals("0",requests.last().url.queryParameter("offset"))
+        assertNull(requests.last().url.queryParameter("session_id"))
     }
 
     @Test fun portraitEntriesAreDroppedWhileUnknownOrientationStaysEligible() {

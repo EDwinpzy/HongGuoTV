@@ -157,6 +157,19 @@
 | S621 连续换片 | PASS | 推荐页连续切换 6 条，日志均为 `1080P/bytevc1/1920×1080`，未出现 `1080×1920` |
 | 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；247 项测试、0 失败、0 错误、9 跳过 |
 
+## 2026-11-19 每次切入推荐页刷新新一批（Debug 实机）
+
+验证分支为 `codex/recommend-fresh`。进入推荐标签页时重开账号推荐会话并清空当前批页面缓存，同时保留已看 ID 过滤；原先的启动期首屏预热不再使用，避免把上一次的推荐页缓存重新播放。设备输入为 ADB 注入的点击与返回键。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 连续切入刷新 | PASS | S621 连续 3 次从首页切入推荐，日志均为 `Recommendation start items=6 fresh=true`；首批首个 ID 分别为 `7690038018282884120`、`7700436138195962904`、`7699769748476677144`，每次都是不同批次 |
+| 旧页缓存不复用 | PASS（单测） | `resetStartsNewBatchWithoutReplayingSeenItems`：`reset()` 后重新请求 `offset=0` 且不带 `session_id`，服务端重复返回的旧条目被已看 ID 过滤，只输出新条目 |
+| 稳定性 | PASS | 三次切入及返回均正常，日志无 `FATAL EXCEPTION` / `ANR` |
+| 本地回归 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过；247 项测试、0 失败、0 错误、9 跳过 |
+
+限制：本轮只验证登录账号路径；未在已登录设备上清除账号复测游客混排，长时间连续切换与弱网重试未覆盖。
+
 ## 未验证或有限制
 
 | 项目 | 状态 | 说明 |

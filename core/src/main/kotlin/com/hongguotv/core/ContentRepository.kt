@@ -194,6 +194,23 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         return feed.page(page)
     }
 
+    /**
+     * Start a fresh recommendation batch for the tab entry. The seen-id set is retained
+     * inside the existing feed, so even if the server repeats its first rows the UI gets
+     * the next unseen items instead of replaying the previous batch.
+     */
+    @Synchronized
+    fun beginRecommendationBatch(account: AccountCredentials?, identity: String) {
+        if (account == null) return
+        val feed = recommendationFeed?.takeIf { recommendationIdentity == identity }
+        if (feed == null) {
+            recommendationFeed = RecommendationFeed(http, account, clock = clock)
+            recommendationIdentity = identity
+        } else {
+            feed.reset()
+        }
+    }
+
     @Synchronized
     fun resetRecommendations() {
         recommendationFeed = null

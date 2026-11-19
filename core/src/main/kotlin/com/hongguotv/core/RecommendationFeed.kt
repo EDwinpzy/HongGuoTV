@@ -71,9 +71,10 @@ class RecommendationFeed(
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
-    /** Fetched pages stay warm so reopening the tab can replay them without skipping. */
+    /** Current-batch pages only; [reset] drops them when the tab is entered again. */
     private val pageCache = linkedMapOf<Int, CatalogPage>()
 
+    /** Start a new server batch. Already seen ids stay excluded so the tab does not replay old rows. */
     fun reset() = synchronized(cursor) {
         cursor.restartServer()
         cursor.expectedPage = 1
