@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.3（versionCode 10103） |
+| 应用版本 | 1.1.4（versionCode 10104） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -156,6 +156,30 @@
 | 横屏推荐过滤 | PASS（单测） | 新增单测覆盖显式竖屏剔除、未知方向保留、纯竖屏首批继续翻页并保持原始 `offset` |
 | S621 连续换片 | PASS | 推荐页连续切换 6 条，日志均为 `1080P/bytevc1/1920×1080`，未出现 `1080×1920` |
 | 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；247 项测试、0 失败、0 错误、9 跳过 |
+
+## 2026-11-19 每次切入推荐页刷新新一批（Debug 实机）
+
+验证分支为 `codex/recommend-fresh`。进入推荐标签页时重开账号推荐会话并清空当前批页面缓存，同时保留已看 ID 过滤；原先的启动期首屏预热不再使用，避免把上一次的推荐页缓存重新播放。设备输入为 ADB 注入的点击与返回键。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 连续切入刷新 | PASS | S621 连续 3 次从首页切入推荐，日志均为 `Recommendation start items=6 fresh=true`；首批首个 ID 分别为 `7690038018282884120`、`7700436138195962904`、`7699769748476677144`，每次都是不同批次 |
+| 旧页缓存不复用 | PASS（单测） | `resetStartsNewBatchWithoutReplayingSeenItems`：`reset()` 后重新请求 `offset=0` 且不带 `session_id`，服务端重复返回的旧条目被已看 ID 过滤，只输出新条目 |
+| 稳定性 | PASS | 三次切入及返回均正常，日志无 `FATAL EXCEPTION` / `ANR` |
+| 本地回归 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过；247 项测试、0 失败、0 错误、9 跳过 |
+
+限制：本轮只验证登录账号路径；未在已登录设备上清除账号复测游客混排，长时间连续切换与弱网重试未覆盖。
+
+## 2026-11-19 v1.1.4 Release 发布验证
+
+版本升级为 `1.1.4 / 10104`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；247 项测试、0 失败、0 错误、9 跳过。Release APK v2 签名校验通过，签名证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| Release 覆盖安装 | PASS | S621 从 1.1.3 Debug 覆盖安装 `1.1.4 / 10104` Release，应用数据与登录态保留 |
+| Release 连续切入 | PASS | 连续 2 次从首页切入推荐，日志均为 `fresh=true`；首批首个 ID 为 `7688736133714299928`、`7704513023825693720`，批次不同，约 6.6 秒进入首屏 |
+| Release 稳定性 | PASS | 切入、返回和播放均正常，日志无 `FATAL EXCEPTION` / `ANR` |
+| 产物摘要 | PASS | APK SHA-256 `DBFDF421724FCBD40B1CC57D0248F2C2B2C4E94D3A9B4E14CAA3F321F1EA83E9`；AAB SHA-256 `1195D009288B00475545B99FE59E068E46197020C908579D98C0CD8B3D769653` |
 
 ## 未验证或有限制
 
