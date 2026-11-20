@@ -11,6 +11,7 @@ import android.view.View
 import android.view.Window
 import android.view.WindowManager
 import android.widget.ImageView
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Space
@@ -286,6 +287,10 @@ class PlayerSidebar(
             },
         )
         val pages = (0 until ((state.episodeCount + groupSize - 1) / groupSize)).toList()
+        val pageScroll = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
         val pageRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -302,14 +307,42 @@ class PlayerSidebar(
                     render()
                     dialog.window?.decorView?.post { firstFocus?.requestFocus() }
                 }
-                pageRow.addView(pageChip, LinearLayout.LayoutParams(0, dp(30), 1f).apply {
+                pageRow.addView(pageChip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply {
                     if (pageViews.isNotEmpty()) leftMargin = dp(6)
                 })
                 pageViews += pageChip
+                pageChip.setOnFocusChangeListener { _, focused ->
+                    if (focused) {
+                        pageScroll.post {
+                            val left = pageScroll.scrollX
+                            val right = left + pageScroll.width
+                            val target = when {
+                                pageChip.left < left -> pageChip.left
+                                pageChip.right > right -> pageChip.right - pageScroll.width
+                                else -> left
+                            }
+                            if (target != left) pageScroll.smoothScrollTo(target.coerceAtLeast(0), 0)
+                        }
+                    }
+                }
             }
             val jump = chip("跳转", compact = true)
-            pageRow.addView(jump, LinearLayout.LayoutParams(dp(66), dp(30)).apply { leftMargin = dp(6) })
+            pageRow.addView(jump, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { leftMargin = dp(6) })
             pageViews += jump
+            jump.setOnFocusChangeListener { _, focused ->
+                if (focused) {
+                    pageScroll.post {
+                        val left = pageScroll.scrollX
+                        val right = left + pageScroll.width
+                        val target = when {
+                            jump.left < left -> jump.left
+                            jump.right > right -> jump.right - pageScroll.width
+                            else -> left
+                        }
+                        if (target != left) pageScroll.smoothScrollTo(target.coerceAtLeast(0), 0)
+                    }
+                }
+            }
             jump.setOnClickListener {
                 locate(state.current, jump) { target ->
                     page = target / groupSize
@@ -318,7 +351,8 @@ class PlayerSidebar(
                     dialog.window?.decorView?.post { firstFocus?.requestFocus() }
                 }
             }
-            body.addView(pageRow, LinearLayout.LayoutParams(-1, dp(30)).apply { bottomMargin = dp(12) })
+            pageScroll.addView(pageRow, android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+            body.addView(pageScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)).apply { bottomMargin = dp(12) })
         }
         val rows = mutableListOf<MutableList<View>>()
         val start = page * groupSize
