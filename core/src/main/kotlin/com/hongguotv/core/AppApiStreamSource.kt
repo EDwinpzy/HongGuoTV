@@ -54,7 +54,7 @@ internal class AppApiStreamSource(private val transport: AppApiTransport) : Stre
                 val definition = (meta?.str("definition") ?: o.str("definition")).substringBefore('p').toIntOrNull() ?: 0
                 val height = (meta?.str("vheight") ?: o.str("vheight")).toIntOrNull() ?: 0
                 val width = (meta?.str("vwidth") ?: o.str("vwidth")).toIntOrNull() ?: 0
-                val quality = if (definition > 0) definition else if (width > 0 && (height == 0 || width < height)) width else height
+                val quality = playbackQualityValue(width, height, definition)
                 Triple(quality, codec, o)
             }.sortedByDescending { it.first }.toList()
         // ByteVC2 resources can expose playable audio but no video track in Android's MP4 extractor;

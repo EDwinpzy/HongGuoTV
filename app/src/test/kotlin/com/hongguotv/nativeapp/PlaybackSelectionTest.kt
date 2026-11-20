@@ -1,6 +1,7 @@
 package com.hongguotv.nativeapp
 
 import com.hongguotv.core.StreamInfo
+import com.hongguotv.core.VideoTracks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -59,6 +60,30 @@ class PlaybackSelectionTest {
         val attempts=primaryPlaybackAttempts(listOf(hdHevc,hdAvc,sdFallback),1080,{ it===hdAvc },{ false })
         assertEquals(listOf(hdAvc),attempts.map { it.tier })
         assertFalse(attempts.single().forced)
+    }
+
+    @Test fun sameResolutionPrefersHigherSourceBitrate() {
+        val low=StreamInfo(
+            "https://signed/1080-low.mp4",null,"1080P","bytevc1",1922,1080,1080,
+            bitrate=571629,
+        )
+        val high=StreamInfo(
+            "https://signed/1080-high.mp4",null,"1080P","bytevc1",1922,1080,1080,
+            bitrate=2000000,
+        )
+        val attempts=primaryPlaybackAttempts(listOf(low,high),1080,{ true },{ false })
+        assertEquals(listOf(high,low),attempts.map { it.tier })
+    }
+
+    @Test fun actualQualityLabelShowsDecodedSizeAndSourceBitrate() {
+        val tier=StreamInfo(
+            "https://signed/1080.mp4",null,"1080P","bytevc1",1922,1080,1080,
+            bitrate=571629,fps=30f,
+        )
+        val track=VideoTracks.Track("hvc1",1922,1080)
+        assertEquals("1080P · 1922×1080 · 片源码率 572 kbps",actualQualityLabel("1080P",track,tier))
+        assertEquals("1080P · 1922×1080",actualQualityLabel("1080P",track,null))
+        assertEquals("1.03 Mbps",formatSourceBitrate(1030858))
     }
 
     @Test fun qualityCapExcludesHigherSupportedPrimary() {

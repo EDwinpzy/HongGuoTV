@@ -13,6 +13,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketException
+import java.util.Locale
 
 /**
  * One opened playback tier (upstream OpenedStream, 2026-11-14 port). Carries the whole
@@ -36,15 +37,37 @@ internal class OpenedStream(
 internal class NoPlayableQualityException :
     IOException("本集所有档位均超出电视解码能力，可尝试其他集数")
 
-/** Better tier = higher quality, h264/avc over other codecs (upstream StreamLadder.better). */
+/** Better tier = higher resolution, then source bitrate, then h264/avc compatibility. */
 private val betterTier =
     compareBy<StreamInfo> { it.qualityValue }
+        .thenBy { it.bitrate }
         .thenBy { if (it.codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")) 1 else 0 }
 private val bestFirstTier =
     compareByDescending<StreamInfo> { it.qualityValue }
+        .thenByDescending { it.bitrate }
         .thenByDescending { if (it.codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")) 1 else 0 }
 
 internal data class PlaybackAttempt(val tier: StreamInfo,val forced: Boolean)
+
+internal fun formatSourceBitrate(bitsPerSecond: Long): String =
+    if (bitsPerSecond >= 1_000_000) {
+        String.format(Locale.ROOT, "%.2f Mbps", bitsPerSecond / 1_000_000.0)
+    } else {
+        "${(bitsPerSecond + 500) / 1_000} kbps"
+    }
+
+internal fun actualQualityLabel(
+    name: String,
+    track: VideoTracks.Track?,
+    tier: StreamInfo?,
+): String {
+    val label = name.ifBlank { tier?.quality.orEmpty() }.ifBlank { "自动" }
+    val width = track?.width?.takeIf { it > 0 } ?: tier?.width?.takeIf { it > 0 }
+    val height = track?.height?.takeIf { it > 0 } ?: tier?.height?.takeIf { it > 0 }
+    val size = if (width != null && height != null) "${width}×${height}" else null
+    val bitrate = tier?.bitrate?.takeIf { it > 0 }?.let { "片源码率 ${formatSourceBitrate(it)}" }
+    return listOfNotNull(label, size, bitrate).joinToString(" · ")
+}
 
 internal fun primaryPlaybackAttempts(
     ladder: List<StreamInfo>,
@@ -113,14 +136,16 @@ internal fun openStream(
     )
     Log.i(
         "HongguoTV",
-        "Playback ladder: " + ladder.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" },
+        "Playback ladder: " + ladder.joinToString {
+            "${it.quality}/${it.codec}/${it.width}x${it.height}/${it.bitrate}bps"
+        },
     )
     val primary = ladder.filterNot { it.isFallback }
     val fallback = ladder.filter { it.isFallback }
     Log.i(
         "HongguoTV",
         "Playback candidates: " + ladder.joinToString {
-            "${it.quality}/${it.codec}/${it.width}x${it.height}=${supportsTier(it)}"
+            "${it.quality}/${it.codec}/${it.width}x${it.height}/${it.bitrate}bps=${supportsTier(it)}"
         },
     )
     val primaryOrder = primaryPlaybackAttempts(ladder,maxQuality,supportsTier,learnedFailure,retryLearned)
@@ -155,6 +180,7 @@ internal fun openStream(
                 Log.i(
                     "HongguoTV",
                     "Playback selected: ${tier.quality}/${tier.codec}/${track?.width}x${track?.height}" +
+                        "/${tier.bitrate}bps" +
                         if (forced) " (forced best effort)" else "",
                 )
                 return OpenedStream(video, tier, ladder, track)

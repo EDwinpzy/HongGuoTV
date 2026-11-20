@@ -1896,7 +1896,7 @@ class MainActivity: Activity() {
         heading(playback,"播放偏好")
         heading(device,"片单与设备")
         lateinit var qualityButton: TextView
-        qualityButton=setting(playback,"清晰度上限  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
+        qualityButton=setting(playback,"分辨率上限  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
         lateinit var defaultSpeed: TextView
         defaultSpeed=setting(playback,"默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
         lateinit var frame: TextView
@@ -3236,6 +3236,7 @@ class MainActivity: Activity() {
         )
         transportPlay?.contentDescription=if(playing) "暂停" else "播放"
         if(screen!="player" || playError) return
+        playbackText.visibility=View.VISIBLE
         if(sleepStopped) { playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"; return }
         if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
         val p=player ?: return
@@ -3500,10 +3501,10 @@ class MainActivity: Activity() {
     }
     private fun showQualityPicker(anchor: TextView,inPlayer: Boolean) {
         val options=PlaybackQuality.options
-        val dialog=TvDialogUi.choice(this,"清晰度上限（设备不支持时自动降级）",options.map { "${it}P" },options.indexOf(library.maxQuality),onChoice={ index ->
+        val dialog=TvDialogUi.choice(this,"分辨率上限（清晰度还取决于片源码率）",options.map { "${it}P" },options.indexOf(library.maxQuality),onChoice={ index ->
                 val target=options[index]; val changed=library.maxQuality!=target
                 library.maxQuality=target
-                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "清晰度上限  ·  ")+"${target}P"
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "画质 " else "分辨率上限  ·  ")+"${target}P"
                 if(changed) {
                     forceBestOnNextPlay=true
                     if(inPlayer) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
@@ -3513,9 +3514,7 @@ class MainActivity: Activity() {
         dialog.show()
     }
     private fun actualQualityText(): String {
-        val name=quality.ifBlank { currentTier?.quality.orEmpty() }.ifBlank { "自动" }
-        val size=currentTrack?.let { "${it.width}×${it.height}" }
-        return listOf(name,size).filterNotNull().filter { it.isNotBlank() }.joinToString(" · ")
+        return actualQualityLabel(quality,currentTrack,currentTier)
     }
     private fun showPlayerSidebar(
         anchor: View?,

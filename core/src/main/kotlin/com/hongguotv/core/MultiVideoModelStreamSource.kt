@@ -687,12 +687,35 @@ internal class MultiVideoModelStreamSource(
                 val definition = (meta?.str("definition") ?: o.str("definition")).substringBefore('p').toIntOrNull() ?: 0
                 val height = (meta?.str("vheight") ?: o.str("vheight")).toIntOrNull() ?: 0
                 val width = (meta?.str("vwidth") ?: o.str("vwidth")).toIntOrNull() ?: 0
-                val quality = if (definition > 0) definition else if (width > 0 && (height == 0 || width < height)) width else height
+                val quality = playbackQualityValue(width, height, definition)
                 Triple(quality, codec, o)
-            }.sortedByDescending { it.first }.toList()
+            }.sortedWith(
+                compareByDescending<Triple<Int, String, JSONObject>> { it.first }
+                    .thenByDescending { tierBitrate(it.third) },
+            ).toList()
     }
 
     private fun isTvCompatible(codec: String) = codec == "h264" || codec == "avc1"
+
+    private fun tierBitrate(item: JSONObject): Long {
+        val meta = item.optJSONObject("video_meta")
+        return sequenceOf(
+            meta?.optLong("real_bitrate", 0) ?: 0,
+            meta?.optLong("bitrate", 0) ?: 0,
+            item.optLong("real_bitrate", 0),
+            item.optLong("bitrate", 0),
+        ).firstOrNull { it > 0 } ?: 0
+    }
+
+    private fun tierFps(item: JSONObject): Float {
+        val meta = item.optJSONObject("video_meta")
+        return sequenceOf(
+            meta?.optDouble("float_fps", 0.0) ?: 0.0,
+            meta?.optDouble("fps", 0.0) ?: 0.0,
+            item.optDouble("float_fps", 0.0),
+            item.optDouble("fps", 0.0),
+        ).firstOrNull { it > 0.0 }?.toFloat() ?: 0f
+    }
 
     /** One tier row -> a playable StreamInfo; null when the address cannot be resolved. */
     private fun tierInfo(row: Triple<Int, String, JSONObject>, seed: ByteArray?): StreamInfo? {
@@ -716,7 +739,17 @@ internal class MultiVideoModelStreamSource(
         val height = (meta?.str("vheight") ?: item.str("vheight")).toIntOrNull() ?: 0
         val width = (meta?.str("vwidth") ?: item.str("vwidth")).toIntOrNull() ?: 0
         val quality = if (row.first > 0) "${row.first}P" else "自动"
-        return StreamInfo(url, key, quality, row.second, width, height, row.first)
+        return StreamInfo(
+            url = url,
+            key = key,
+            quality = quality,
+            codec = row.second,
+            width = width,
+            height = height,
+            qualityValue = row.first,
+            bitrate = tierBitrate(item),
+            fps = tierFps(item),
+        )
     }
 
     /**

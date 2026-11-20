@@ -99,6 +99,69 @@ class ContentRepositoryTest {
         assertTrue(requests.none { it.url.encodedPath == "/novel/player/multi_video_model/v1/" })
     }
 
+    @Test fun videoTabCarriesSourceBitrateAndPrefersItWithinOneResolution() {
+        PlaybackRoutes.shared.reset()
+        val repo=repository { request ->
+            if(request.url.encodedPath=="/reading/bookapi/video_tab/multi_video_model/v1/")
+                JSONObject().put("code",0).put("data",JSONObject()
+                    .put("video_model_data",JSONObject().put("123",JSONObject()
+                        .put("video_model",JSONObject().put("video_list",JSONObject()
+                            .put("v0",JSONObject()
+                                .put("video_meta",JSONObject()
+                                    .put("definition","1080p")
+                                    .put("vwidth",1922)
+                                    .put("vheight",1080)
+                                    .put("codec_type","h264")
+                                    .put("bitrate",800000)
+                                    .put("float_fps",30))
+                                .put("main_url","https://example.com/low-1080"))
+                            .put("v1",JSONObject()
+                                .put("video_meta",JSONObject()
+                                    .put("definition","1080p")
+                                    .put("vwidth",1922)
+                                    .put("vheight",1080)
+                                    .put("codec_type","h264")
+                                    .put("real_bitrate",2000000)
+                                    .put("bitrate",1000000)
+                                    .put("fps",30))
+                                .put("main_url","https://example.com/high-1080")))))))
+                    .toString()
+            else throw AssertionError("unexpected playback request "+request.url)
+        }
+        val tiers=repo.playbackTiers("123",1080,ContentType.SHORT)
+        assertEquals(listOf("https://example.com/high-1080","https://example.com/low-1080"),tiers.map { it.url })
+        assertEquals(listOf(2000000L,800000L),tiers.map { it.bitrate })
+        assertEquals(listOf(30f,30f),tiers.map { it.fps })
+    }
+
+    @Test fun codedGeometryOverridesMisleadingServerDefinition() {
+        PlaybackRoutes.shared.reset()
+        val meta=JSONObject()
+            .put("definition","1080p")
+            .put("vwidth",854)
+            .put("vheight",480)
+            .put("codec_type","h264")
+            .put("real_bitrate",323084)
+        val model=JSONObject().put("video_list",JSONObject().put("v0",JSONObject()
+            .put("video_meta",meta)
+            .put("main_url","https://example.com/actually-480")))
+        val response=JSONObject().put("code",0).put("data",JSONObject()
+            .put("video_model_data",JSONObject().put("123",JSONObject()
+                .put("video_model",model))))
+            .toString()
+        val repo=repository { request ->
+            if(request.url.encodedPath=="/reading/bookapi/video_tab/multi_video_model/v1/")
+                response
+            else throw AssertionError("unexpected playback request "+request.url)
+        }
+        val tier=repo.stream("123",1080,ContentType.SHORT)
+        assertEquals("480P",tier.quality)
+        assertEquals(480,tier.qualityValue)
+        assertEquals(854,tier.width)
+        assertEquals(480,tier.height)
+        assertEquals(323084L,tier.bitrate)
+    }
+
     @Test fun videoTabFailureFallsBackToOldPath() {
         // Any video_tab failure (business code, empty body, shape mismatch, network
         // error) falls back to the old POST flow; the old path's retry and identity

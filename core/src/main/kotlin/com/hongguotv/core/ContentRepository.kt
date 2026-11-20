@@ -50,12 +50,23 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
  * One playback address. [codec]/[width]/[height] are the API metadata of the chosen
  * rendition (upstream Rendition fields, 2026-11-14 port) so the app layer can verify
  * them against the device's real decoder capabilities; [qualityValue] is the numeric
- * tier (0 = unknown/auto) for ladder-style comparisons. Defaults keep the legacy
- * 3-arg constructors of the fallback channels working unchanged.
+ * tier (0 = unknown/auto) for ladder-style comparisons. [bitrate]/[fps] expose the
+ * server's source metadata so the TV can distinguish a high-bitrate 1080P rendition
+ * from a heavily compressed one. Defaults keep the legacy constructors working.
  */
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String,
                       val codec: String = "", val width: Int = 0, val height: Int = 0,
-                      val qualityValue: Int = 0, val isFallback: Boolean = false)
+                      val qualityValue: Int = 0, val isFallback: Boolean = false,
+                      val bitrate: Long = 0, val fps: Float = 0f)
+
+internal fun playbackQualityValue(width: Int, height: Int, definition: Int = 0): Int =
+    when {
+        width > 0 && (height == 0 || width < height) -> width
+        height > 0 -> height
+        definition > 0 -> definition
+        else -> 0
+    }
+
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
 /**
@@ -613,7 +624,9 @@ class ContentRepository(
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
         return PlaybackRequestBudget.run(if (speculative) 6_000 else 10_000) {
             val tiers = streams.ladder(id, maxQuality, type, metadataAhead, speculative, seriesId)
-            logger.info("ladder $id: " + tiers.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" })
+            logger.info("ladder $id: " + tiers.joinToString {
+                "${it.quality}/${it.codec}/${it.width}x${it.height}/${it.bitrate}bps"
+            })
             if (tiers.isEmpty() || tiers.any { it.isAvc() } || speculative) return@run tiers
             // v5 can still return a HEVC-only ladder. Keep one verified full-episode
             // H264 rendition as the last resort, but stay inside the same request
