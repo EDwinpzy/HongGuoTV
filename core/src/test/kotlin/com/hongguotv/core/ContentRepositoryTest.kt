@@ -123,6 +123,44 @@ class ContentRepositoryTest {
         assertTrue(requests.any { it.url.encodedPath=="/novel/player/multi_video_model/v1/" })
     }
 
+    @Test fun hevcOnlyLadderSurvivesWebsiteFallbackRejection() {
+        // Live S621 episode 366: the signed ladder is HEVC-only and the website
+        // full-episode fallback answers 403. HEVC is playable on this box, so the
+        // deterministic fallback rejection must NOT discard the signed ladder.
+        PlaybackRoutes.shared.reset()
+        val requests=mutableListOf<Request>()
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            val request=chain.request(); requests+=request
+            val response=when {
+                request.url.encodedPath=="/service/2/device_register/" ->
+                    JSONObject().put("device_id","1905892595378490")
+                        .put("install_id","1905892595382586").toString()
+                request.url.encodedPath.startsWith("/reading/bookapi/video_tab/") ->
+                    JSONObject().put("code",0).put("data",JSONObject()
+                        .put("video_model_data",JSONObject().put("123",JSONObject()
+                            .put("video_model",JSONObject().put("video_list",JSONObject()
+                                .put("v0",JSONObject()
+                                    .put("video_meta",JSONObject().put("vheight",1080).put("codec_type","bytevc1"))
+                                    .put("main_url","https://example.com/hevc")))))))
+                        .toString()
+                request.url.encodedPath=="/api/video/protected/fallback-play-info" -> ""
+                else -> ""
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(if(request.url.encodedPath=="/api/video/protected/fallback-play-info") 403 else 200)
+                .message(if(request.url.encodedPath=="/api/video/protected/fallback-play-info") "Forbidden" else "OK")
+                .body(response.toResponseBody()).build()
+        }.build()
+        val repo=ContentRepository(
+            http,
+            System::currentTimeMillis,
+            PlaybackDeviceSession { DeviceRegister.Registered("333", "444") },
+        )
+        val tiers=repo.playbackTiers("123", 1080, ContentType.SHORT)
+        assertEquals(listOf("https://example.com/hevc"), tiers.map { it.url })
+        assertTrue(requests.any { it.url.encodedPath=="/api/video/protected/fallback-play-info" })
+    }
+
     @Test fun legacyMissingCodecLabelKeepsQualityLimit() {
         val repo=streamRepository(Triple(720,"","https://example.com/legacy"),Triple(1080,"bytevc1","https://example.com/hevc"))
         assertEquals("720P",repo.stream("123",720).quality)
@@ -531,7 +569,10 @@ class ContentRepositoryTest {
         OkHttpClient.Builder().addInterceptor { chain ->
             // The v5 mobile channel is the production first choice; these fixtures
             // exercise the older fallback chain, so fail v5 locally without network.
-            if (chain.request().url.encodedPath == "/novel/player/multi_video_model/player/v1") {
+            if (chain.request().url.encodedPath in setOf(
+                    "/novel/player/multi_video_model/v1",
+                    "/novel/player/multi_video_model/player/v1",
+                )) {
                 return@addInterceptor Response.Builder().request(chain.request())
                     .protocol(Protocol.HTTP_1_1).code(400).message("Bad Request")
                     .body("".toResponseBody()).build()
@@ -544,7 +585,9 @@ class ContentRepositoryTest {
             else respond(chain.request())
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(body.toResponseBody()).build()
-        }.build(),clock
+        }.build(),
+        clock,
+        PlaybackDeviceSession { DeviceRegister.Registered("333", "444") },
     )
 
     private fun rankPayload(page: Int = 1, totalPages: Int = 2) = JSONObject()

@@ -40,6 +40,7 @@ internal class MobilePlaybackStreamSource(
         type: ContentType,
         metadataAhead: List<String>,
         speculative: Boolean,
+        seriesId: String,
     ): StreamInfo {
         val tiers = ladder(id, maxQuality, type, metadataAhead, speculative)
         val best = tiers.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
@@ -57,6 +58,7 @@ internal class MobilePlaybackStreamSource(
         type: ContentType,
         metadataAhead: List<String>,
         speculative: Boolean,
+        seriesId: String,
     ): List<StreamInfo> {
         require(id.matches(Regex("[0-9]{1,30}")))
         val profile = if (speculative) session.existing()
@@ -70,7 +72,7 @@ internal class MobilePlaybackStreamSource(
     }
 
     override fun refreshIdentity() {
-        runCatching { session.rotate(http) }
+        runCatching { session.playbackRotate(http) }
     }
 
     private fun request(
@@ -262,7 +264,7 @@ internal class MobilePlaybackStreamSource(
     private companion object {
         const val ENDPOINT =
             "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
-        val sharedSigner = Signer(mobileV5 = true)
+        val sharedSigner = Signer.sharedV5()
         val betterTier: Comparator<StreamInfo> =
             compareBy<StreamInfo> {
                 if (it.codec.lowercase(Locale.ROOT) in setOf("h264", "avc", "avc1", "avc3")) 1 else 0

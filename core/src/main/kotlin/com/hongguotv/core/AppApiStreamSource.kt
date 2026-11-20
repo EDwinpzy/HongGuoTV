@@ -20,7 +20,14 @@ internal class AppApiStreamSource(private val transport: AppApiTransport) : Stre
 
     private fun playbackContentType(type: ContentType) = if (type == ContentType.COMIC) 1004 else 1
 
-    override fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): StreamInfo {
+    override fun stream(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String>,
+        speculative: Boolean,
+        seriesId: String,
+    ): StreamInfo {
         // Background reads never touch this channel (upstream 0.1.26): it is a kept
         // probe for a retired endpoint - a speculative request would burn quota on
         // a path the foreground no longer relies on.

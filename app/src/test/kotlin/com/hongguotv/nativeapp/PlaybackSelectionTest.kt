@@ -101,6 +101,9 @@ class PlaybackSelectionTest {
 
     @Test fun cancellationIsNotConvertedIntoAnotherTierAttempt() {
         assertTrue(cancelledPlayback(java.io.InterruptedIOException(" canceled")))
+        // OkHttp uses the same exception type for a call timeout; that must fall
+        // through to the next tier, not abort playback as a user cancellation.
+        assertFalse(cancelledPlayback(java.io.InterruptedIOException("timeout")))
         assertTrue(cancelledPlayback(java.net.SocketException("Canceled")))
         assertFalse(cancelledPlayback(SocketTimeoutException("timeout")))
     }

@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import android.util.Log
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.ContentType
+import com.hongguotv.core.PlaybackSourceUnavailableException
 import com.hongguotv.core.RemoteVideo
 import com.hongguotv.core.StreamInfo
 import com.hongguotv.core.VideoTracks
@@ -100,8 +101,16 @@ internal fun openStream(
     supportsTrack: (VideoTracks.Track?) -> Boolean,
     learnedFailure: (StreamInfo) -> Boolean = { false },
     retryLearned: Boolean = false,
+    seriesId: String = "",
 ): OpenedStream? {
-    val ladder = repository.playbackTiers(id, maxQuality, type, metadataAhead, speculative)
+    val ladder = repository.playbackTiers(
+        id,
+        maxQuality,
+        type,
+        metadataAhead,
+        speculative,
+        seriesId,
+    )
     Log.i(
         "HongguoTV",
         "Playback ladder: " + ladder.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" },
@@ -123,11 +132,10 @@ internal fun openStream(
         },
     )
     var primaryError: Exception? = null
-    var attemptedPrimary=false
+    var primaryDeterministic: PlaybackSourceUnavailableException? = null
     for ((tier,forced) in primaryOrder) {
         val video = RemoteVideo(http, tier)
         try {
-            attemptedPrimary=true
             Log.i(
                 "HongguoTV",
                 "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}" +
@@ -159,13 +167,16 @@ internal fun openStream(
         } catch (error: Exception) {
             video.close()
             if(cancelledPlayback(error)) throw error
-            primaryError = error
+            if (error is PlaybackSourceUnavailableException) primaryDeterministic = error
+            else primaryError = error
             Log.w("HongguoTV", "Playback tier failed: ${tier.quality}/${tier.codec}: ${error.message}")
         }
     }
     // The website fallback is a continuation source, never proof that the signed
     // primary ladder failed capability checks. Only reach it after every primary
     // candidate was attempted.
+    var fallbackError: Exception? = null
+    var fallbackDeterministic: PlaybackSourceUnavailableException? = null
     for (tier in fallback.sortedWith(bestFirstTier)) {
         val video = RemoteVideo(http, tier)
         try {
@@ -180,11 +191,17 @@ internal fun openStream(
         } catch (error: Exception) {
             video.close()
             if(cancelledPlayback(error)) throw error
-            if(primaryError==null && primary.isEmpty()) primaryError=error
+            if (error is PlaybackSourceUnavailableException) fallbackDeterministic = error
+            else fallbackError = error
             Log.w("HongguoTV", "Playback fallback failed: ${tier.quality}: ${error.message}")
         }
     }
-    if (ladder.isNotEmpty()) throwNoOpenedStream(ladder, primaryError.takeIf { attemptedPrimary || primary.isEmpty() })
+    if (ladder.isNotEmpty()) {
+        throwNoOpenedStream(
+            ladder,
+            primaryDeterministic ?: fallbackDeterministic ?: primaryError ?: fallbackError,
+        )
+    }
     return null
 }
 
@@ -199,8 +216,10 @@ internal fun throwNoOpenedStream(ladder: List<StreamInfo>, lastError: Exception?
 
 internal fun cancelledPlayback(error: Throwable): Boolean =
     Thread.currentThread().isInterrupted || generateSequence(error) { it.cause }.take(8).any {
-        (it is InterruptedIOException && it !is java.net.SocketTimeoutException) ||
-            (it is SocketException && it.message?.contains("cancel",ignoreCase=true)==true)
+        (it is InterruptedIOException && it !is java.net.SocketTimeoutException &&
+            it.message?.contains("timeout", ignoreCase=true)!=true) ||
+            (it is SocketException && it.message?.contains("cancel",ignoreCase=true)==true) ||
+            it.message?.contains("请求已取消")==true
     }
 
 /** Lowest ladder tier strictly below the attempted quality; null = no dead-end button. */

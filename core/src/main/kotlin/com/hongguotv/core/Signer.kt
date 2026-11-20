@@ -442,11 +442,23 @@ internal class Signer(
          */
         @Volatile
         private var sharedContext: Signer? = null
+        @Volatile
+        private var sharedV5Context: Signer? = null
 
         /** The one process-stable signer; created lazily on first playback call. */
         @Synchronized
         internal fun shared(clock: () -> Long): Signer =
             sharedContext ?: Signer(clock).also { sharedContext = it }
+
+        /**
+         * The v5 carrier must also keep ONE process identity for the whole app life.
+         * Main playback and the short-lived prefetch repository otherwise look like
+         * two different processes using the same device_id, which the server treats
+         * as a risk-control signal and answers with empty playback models.
+         */
+        @Synchronized
+        internal fun sharedV5(clock: () -> Long = System::currentTimeMillis): Signer =
+            sharedV5Context ?: Signer(clock, mobileV5 = true).also { sharedV5Context = it }
 
         val BRANCH2_SV = intArrayOf(
             0xa7aefe20.toInt(),0x7149f1d6.toInt(),0x47e4ca07.toInt(),0xe9b58f67.toInt(),0x93b924de.toInt(),0xc614d0f5.toInt(),0x38afe0ef.toInt(),0xb2bbad73.toInt(),
