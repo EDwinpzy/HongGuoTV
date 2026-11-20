@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.7（versionCode 10107） |
+| 应用版本 | 1.1.8（versionCode 10108） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -239,9 +239,9 @@
 | 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
 | 产物摘要 | PASS | APK SHA-256 `32897950ECF3D58DDAF77690FB8BB639ACF9352167D1471F85FE7515B54F3A0E`；AAB SHA-256 `0C6A58BAFF8FC9483AADCD01AAC87D98071E1FC8D1521E72F96F27FA8E590CD5` |
 
-## 2026-11-21 播放超时与 S621 黑屏修复（Release 实机）
+## 2026-11-21 v1.1.8 播放超时与 S621 黑屏修复（Release 实机）
 
-验证分支为 `codex/playback-connection-timeout`，验证包基于 `1.1.7 / 10107` 构建并使用原 Release 签名覆盖安装到 S621。
+版本升级为 `1.1.8 / 10108`。验证分支为 `codex/playback-connection-timeout`，验证包使用原 Release 签名覆盖安装到 S621。
 
 根因有两层：
 
@@ -266,9 +266,9 @@
 | 远距离拖动 | PASS | 拖到约 74 秒触发 `STATE_BUFFERING`，`stalledMs=1484` 后恢复；继续拖到 91.9 秒，`stalledMs=795` 后恢复，未出现播放失败 |
 | 黑屏回归 | PASS | `SurfaceView` 版本在同一集上仅声音无画面；改为 `TextureView` 后，恢复播放、单档 1080P、连续切集和拖动后 ADB 截图均持续显示视频画面 |
 | 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；263 项测试、0 失败、0 错误、9 跳过 |
-| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；候选 APK SHA-256 `08FAA05A31FEDF296F4CE22F6B03C353FDA2E8C9E0A82A5FEE3CAB19A3EFC9A6`，AAB SHA-256 `2BAA0E5BC658B01A397ED3D73D0C3F1110968B33C62C0BF06D1B523B62D7C9F1` |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；最终 APK/AAB 摘要见 v1.1.8 GitHub Release |
 
-限制：S621 输入均为 ADB 注入，未使用物理遥控器；ADB `screencap` 与日志已确认视频层出画，但未用外部相机对投影幕布做独立人工拍摄确认。本轮尚未提升版本号或创建 GitHub Release。
+限制：S621 输入均为 ADB 注入，未使用物理遥控器；ADB `screencap` 与日志已确认视频层出画，但未用外部相机对投影幕布做独立人工拍摄确认。
 
 ## 未验证或有限制
 
