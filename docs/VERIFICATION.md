@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.5（versionCode 10105） |
+| 应用版本 | 1.1.6（versionCode 10106） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -210,6 +210,22 @@
 | 产物摘要 | PASS | APK SHA-256 `D2C30FA726EA9ECFE571DA32B74D12162878FA73894ADD707A3190F739B58266`；AAB SHA-256 `4286D9AB9C5914464D9E59DC9FDB96259D0EEC6544D201CE2DB82CD5AA4E3137` |
 
 限制：本轮仍未直接操作手机红果 App 的“观看历史”页面，手机端最终展示需在同一账号下人工核对；S621 输入均为 ADB 注入，未使用物理遥控器。
+
+## 2026-11-20 v1.1.6 Release 发布验证
+
+版本升级为 `1.1.6 / 10106`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；255 项测试、0 失败、0 错误、9 跳过。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 列表管理按钮移除 | PASS | 收藏页不再显示“检查更新”和“管理收藏”，历史页不再显示“管理记录”；顶部操作栏整体移除，海报网格直接从导航栏下方开始 |
+| 选中预览移除 | PASS | 历史、收藏及各列表页焦点移动到焦点居中后，均不再显示剧名、观看进度和分类预览区域 |
+| Release 覆盖安装 | PASS | S621 从 `1.1.5 / 10105` 覆盖安装 `1.1.6 / 10106` Release，应用数据与登录态保留 |
+| 播放回归 | PASS | 从历史页播放《阳谋正道：开局入宫，从内廷开始颠覆王朝》第 1 集实际出画，日志 `Playback first frame ... elapsedMs=3414`、`Playback ready` |
+| 稳定性 | PASS | 启动、切换列表、移动焦点、播放和返回过程中无 `FATAL EXCEPTION` / `ANR` |
+| 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
+| 产物摘要 | PASS | APK SHA-256 `BB1D9A5F90496DBE6027E2F344D80C8ABC84F0AD10473E189F929A0910FB60A7`；AAB SHA-256 `CB431C90164833EB24DD76381A2586C2A4A68A4711A7299D1143F27A5BFA3` |
+
+限制：S621 输入均为 ADB 注入，未使用物理遥控器；收藏卡片底部的“尚未检查更新”是内容状态，不是已移除的顶部操作按钮。
 
 ## 未验证或有限制
 
