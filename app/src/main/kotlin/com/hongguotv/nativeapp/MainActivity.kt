@@ -1288,44 +1288,6 @@ class MainActivity: Activity() {
             container.addView(boards,lp(-1,dp(40)).apply { bottomMargin=dp(8) })
             nav.forEach { it.nextFocusDownId=rankButtons[current]?.id ?: rankRefresh!!.id }
             rankButtons.values.forEach { it.nextFocusDownId=View.NO_ID }
-        } else if(tab==6 || tab==7 || tab==8) {
-            val controls=row().apply {
-                setPadding(0,0,0,dp(5)); gravity=Gravity.RIGHT
-            }
-            if(tab==6) {
-                favoriteCheck=addButton(controls,"检查更新") { favoriteMonitor.check(force=true) }.apply {
-                    nextFocusUpId=navFor(tab).id
-                    textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-                }
-                if(library.favorites().isNotEmpty()) {
-                    historyManage=addButton(controls,"管理收藏") {
-                        val rows=library.favorites()
-                        tvTools.choose("选择要管理的收藏",rows.map { it.title },historyManage,{ index -> manageFavorite(rows[index],historyManage) },"清空收藏") {
-                            tvTools.confirm("清空收藏","将删除本机全部收藏，观看记录会保留。",historyManage) {
-                                library.clearFavorites(); cloudAccount.onLocalFavoritesCleared(); catalogFocus=""; showCatalog()
-                            }
-                        }
-                    }.apply {
-                        nextFocusUpId=navFor(tab).id
-                        textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-                    }
-                }
-            }
-            if(tab==7 && library.history().isNotEmpty()) {
-                historyManage=addButton(controls,"管理记录") {
-                    val rows=library.history()
-                    tvTools.choose("选择要管理的观看记录",rows.map { it.series.title },historyManage,{ index -> manageHistory(rows[index].series,historyManage) },"清空记录") {
-                        tvTools.confirm("清空观看记录","将删除本机所有观看进度，收藏会保留。",historyManage) {
-                            val ids=library.history().map { it.series.id }.toSet()
-                            library.clearHistory(); cloudAccount.onLocalHistoryRemoved(ids); catalogFocus=""; showCatalog()
-                        }
-                    }
-                }.apply {
-                    nextFocusUpId=navFor(tab).id
-                    textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-                }
-            }
-            if(controls.childCount>0) container.addView(controls,lp(-1,-2).apply { bottomMargin=dp(8) })
         }
         val body=column(); catalogBody=body; container.addView(body,lp(-1,0).apply { weight=1f })
         if(localCatalog()) {
@@ -1480,13 +1442,7 @@ class MainActivity: Activity() {
         // Infinite grids append pages in place, so their scroll key ignores the page number.
         catalogPageKey=if(tab==1 || tab==2 || tab==3 || tab==5 || tab==TAB_RECOMMEND || localCatalog()) "$tab:${collection.orEmpty()}:$themeSlug:$query" else "$tab:${collection.orEmpty()}:$page:$query"
         val preview=SeriesPreview(this); selectionPreview=preview
-        // Collapsible preview everywhere (theme tabs, ranking, favorites, history):
-        // the whole bar hides until a card actually takes focus and shows its title.
-        preview.collapsible=true
-        if(tab==TAB_RECOMMEND) preview.blank() else {
-            body.addView(preview)
-            if(catalogFocus.isBlank()) preview.blank()
-        }
+        preview.visibility=View.GONE
         val scroll=ScrollView(this).apply { isFillViewport=false; isVerticalScrollBarEnabled=false; clipToPadding=false }; catalogScroll=scroll
         val list=column(); scroll.addView(list); body.addView(scroll,lp(-1,0).apply { weight=1f })
         var restoringScroll=true
