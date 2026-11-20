@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.6（versionCode 10106） |
+| 应用版本 | 1.1.7（versionCode 10107） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -226,6 +226,18 @@
 | 产物摘要 | PASS | APK SHA-256 `BB1D9A5F90496DBE6027E2F344D80C8ABC84F0AD10473E189F929A0910FB60A7`；AAB SHA-256 `CB431C90164833EB24DD76381A2586C2A4A68A4711A7299D1143F27A5BFA3` |
 
 限制：S621 输入均为 ADB 注入，未使用物理遥控器；收藏卡片底部的“尚未检查更新”是内容状态，不是已移除的顶部操作按钮。
+
+## 2026-11-20 v1.1.7 Release 发布验证
+
+版本升级为 `1.1.7 / 10107`。完整门禁 `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；255 项测试、0 失败、0 错误、9 跳过。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 集数分组宽度 | PASS | 分组按钮改为按内容自适应宽度；超出侧栏宽度时改为横向滚动，焦点切换时自动滚动到可见位置 |
+| Release 覆盖安装 | PASS | S621 从 `1.1.6 / 10106` 覆盖安装 `1.1.7 / 10107` Release，应用数据保留 |
+| 稳定性 | PASS | 启动后无 `FATAL EXCEPTION` / `ANR` |
+| 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
+| 产物摘要 | PASS | APK SHA-256 `32897950ECF3D58DDAF77690FB8BB639ACF9352167D1471F85FE7515B54F3A0E`；AAB SHA-256 `0C6A58BAFF8FC9483AADCD01AAC87D98071E1FC8D1521E72F96F27FA8E590CD5` |
 
 ## 未验证或有限制
 
