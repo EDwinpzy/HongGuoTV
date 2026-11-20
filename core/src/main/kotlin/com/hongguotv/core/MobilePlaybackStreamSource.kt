@@ -127,7 +127,7 @@ internal class MobilePlaybackStreamSource(
             .build()
         val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
         if (speculative && Thread.currentThread().isInterrupted) throw IOException("请求已取消")
-        return RequestScope.execute(transport.newCall(request)) { response ->
+        return RequestScope.execute(PlaybackRouteTransport.call(transport,request)) { response ->
             if (!response.isSuccessful) {
                 throw IOException("播放接口请求失败（HTTP ${response.code}）")
             }

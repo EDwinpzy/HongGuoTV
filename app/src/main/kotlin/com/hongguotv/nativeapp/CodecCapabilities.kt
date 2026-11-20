@@ -23,8 +23,12 @@ import com.hongguotv.core.VideoTracks
  */
 object CodecCapabilities {
     private const val STORE = "native-decoder-lessons-v1"
-    /** v2 validates coded sizes and must not inherit v1's over-eager failures. */
-    private const val SCHEMA = 2
+    /**
+     * v4 requires a repeat failure before a tier is rejected and self-heals on a
+     * rendered frame. Earlier revisions could persist a one-off failure against a
+     * padded size (1922x1080), which then blocked every later attempt at that tier.
+     */
+    private const val SCHEMA = 4
     private val lessons = DecoderLessons()
     private var prefs: SharedPreferences? = null
     private val verdicts = HashMap<String, Boolean>()
@@ -39,11 +43,22 @@ object CodecCapabilities {
             // permanently reject every higher tier (e.g. 1080P fell back to 360P).
             // Relearn from real playback after the upgrade instead.
             val dropped = store.getStringSet("failures", emptySet())?.size ?: 0
-            store.edit().remove("failures").putInt("schema", SCHEMA).apply()
+            val droppedPending = store.getStringSet("pending", emptySet())?.size ?: 0
+            store.edit().remove("failures").remove("pending").putInt("schema", SCHEMA).apply()
             lessons.reset()
-            android.util.Log.i("HongguoTV", "Decoder capability store migrated to schema $SCHEMA (dropped $dropped legacy failures)")
+            android.util.Log.i(
+                "HongguoTV",
+                "Decoder capability store migrated to schema $SCHEMA "+
+                    "(dropped $dropped legacy failures, $droppedPending probation entries)",
+            )
         } else {
-            lessons.restore(store.getStringSet("failures", emptySet()) ?: emptySet())
+            lessons.restore(
+                store.getStringSet("failures", emptySet()) ?: emptySet(),
+                store.getStringSet("pending", emptySet()) ?: emptySet(),
+            )
+            if (lessons.size() > 0) {
+                android.util.Log.i("HongguoTV", "Decoder capability lessons restored: ${lessons.size()} entries")
+            }
         }
     }
 
@@ -58,14 +73,15 @@ object CodecCapabilities {
         if (lessons.fails(codec, width, height)) return false
         val type = mime(codec) ?: return true
         if (width == null || height == null || width <= 0 || height <= 0) return true
-        val key = "$type $width $height"
+        val (codedWidth,codedHeight)=decoderProbeSize(width,height)
+        val key = "$type $codedWidth $codedHeight"
         synchronized(verdicts) { verdicts[key]?.let { return it } }
         val verdict =
             runCatching {
                 MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
                     !info.isEncoder &&
                         runCatching {
-                            info.getCapabilitiesForType(type).videoCapabilities.isSizeSupported(width, height)
+                            info.getCapabilitiesForType(type).videoCapabilities.isSizeSupported(codedWidth, codedHeight)
                         }.getOrDefault(false)
                 }
             }.getOrDefault(true) // A broken ROM probe must not block playback.
@@ -88,20 +104,42 @@ object CodecCapabilities {
      */
     fun learnFailure(codec: String, width: Int?, height: Int?): Boolean {
         val overReported = supports(codec, width, height)
-        val key = lessons.remember(codec, width, height) ?: return false
-        prefs?.edit()?.putInt("schema", SCHEMA)?.putStringSet("failures", lessons.keys())?.apply()
-        android.util.Log.w("HongguoTV", "Learned decoder failure $key (static probe claimed support: $overReported)")
+        val (key,confirmed)=lessons.observeFailure(codec,width,height) ?: return false
+        persist()
+        if(confirmed) {
+            android.util.Log.w("HongguoTV", "Learned decoder failure $key after repeat (static probe claimed support: $overReported)")
+        } else {
+            android.util.Log.w("HongguoTV", "Decoder failure probation $key (will reject only if it repeats)")
+        }
         return overReported
+    }
+
+    /** Playback proved this codec/size works; drop any stale learned failure. */
+    fun confirmPlayable(codec: String, width: Int?, height: Int?): Boolean {
+        val removed=lessons.forget(codec,width,height)
+        if(removed) {
+            persist()
+            android.util.Log.i("HongguoTV", "Cleared stale decoder failure after successful frame: ${lessons.key(codec,width,height)}")
+        }
+        return removed
     }
 
     /** Clears every learned failure (播放设置 → 重置设备能力记录). */
     fun resetLearned() {
         lessons.reset()
         synchronized(verdicts) { verdicts.clear() }
-        prefs?.edit()?.putInt("schema", SCHEMA)?.putStringSet("failures", lessons.keys())?.apply()
+        persist()
     }
 
     fun learnedCount() = lessons.size()
+
+    private fun persist() {
+        prefs?.edit()
+            ?.putInt("schema", SCHEMA)
+            ?.putStringSet("failures", lessons.keys())
+            ?.putStringSet("pending", lessons.pendingKeys())
+            ?.apply()
+    }
 
     fun logDeviceCapabilities() {
         if (logged) return

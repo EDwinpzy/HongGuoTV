@@ -73,4 +73,37 @@ class FasterBrowsingTest {
             remote.close(); assertThrows(java.io.IOException::class.java) { remote.read(0,1) }
         } finally { server.stop(0); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow() }
     }
+
+    @Test fun resetMediaConnectionResumesTheSameRangeOnANewConnection() {
+        fun box(type: String,body: ByteArray)=be32(body.size+8)+type.toByteArray()+body
+        val data=box("ftyp","isom0000".toByteArray())+box("moov",byteArrayOf())+ByteArray(512*1024)
+        val requests=java.util.concurrent.atomic.AtomicInteger()
+        val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        server.createContext("/video") { exchange ->
+            val range=exchange.requestHeaders.getFirst("Range")
+            val (start,requested)=range.removePrefix("bytes=").split('-').map(String::toInt)
+            val end=minOf(data.lastIndex,requested)
+            exchange.responseHeaders.add("Content-Range","bytes $start-$end/${data.size}")
+            if(requests.incrementAndGet()==1) {
+                exchange.sendResponseHeaders(206,(end-start+1).toLong())
+                exchange.responseBody.write(data,start,1024)
+                exchange.responseBody.flush()
+                exchange.close()
+            } else {
+                val bytes=data.copyOfRange(start,end+1)
+                exchange.sendResponseHeaders(206,bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+        }
+        server.start()
+        val client=OkHttpClient.Builder().retryOnConnectionFailure(false).build()
+        try {
+            val remote=RemoteVideo(client,StreamInfo("http://127.0.0.1:${server.address.port}/video",null,"720P"))
+            remote.prepare()
+            assertEquals(data.size.toLong(),remote.total)
+            assertArrayEquals(data.copyOfRange(0,256*1024),remote.read(0,256*1024))
+            assertEquals(2,requests.get())
+            remote.close()
+        } finally { server.stop(0); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow() }
+    }
 }

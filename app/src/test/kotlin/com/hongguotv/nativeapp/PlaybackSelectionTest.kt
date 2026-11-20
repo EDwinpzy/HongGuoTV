@@ -3,8 +3,11 @@ package com.hongguotv.nativeapp
 import com.hongguotv.core.StreamInfo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.SocketTimeoutException
 
 class PlaybackSelectionTest {
     private val hdHevc=StreamInfo("https://signed/1080.mp4",null,"1080P","bytevc1",1080,1920,1080)
@@ -19,9 +22,11 @@ class PlaybackSelectionTest {
         assertFalse(attempts.single().tier.isFallback)
     }
 
-    @Test fun learnedPrimaryFailureFallsThroughInsteadOfForcingAgain() {
+    @Test fun learnedPrimaryFailureGetsOneBestEffortAttemptWithoutAlternateTier() {
         val attempts=primaryPlaybackAttempts(listOf(hdHevc,sdFallback),1080,{ it===sdFallback },{ it===hdHevc })
-        assertTrue(attempts.isEmpty())
+        assertEquals(1,attempts.size)
+        assertEquals(hdHevc,attempts.single().tier)
+        assertTrue(attempts.single().forced)
     }
 
     @Test fun explicitQualityChangeRetriesLearnedFailedTopPrimary() {
@@ -79,6 +84,25 @@ class PlaybackSelectionTest {
     @Test fun fallbackOnlyLadderProducesNoPrimaryAttempts() {
         val attempts=primaryPlaybackAttempts(listOf(sdFallback),1080,{ true },{ false })
         assertTrue(attempts.isEmpty())
+    }
+
+    @Test fun transportFailureDuringSelectionRemainsRetryable() {
+        val timeout=SocketTimeoutException("stalled media route")
+        val primary=StreamInfo("https://signed/retry.mp4",null,"1080P","bytevc1",1920,1080,1080)
+        val thrown=assertThrows(SocketTimeoutException::class.java) {
+            throwNoOpenedStream(listOf(primary),timeout)
+        }
+        assertSame(timeout,thrown)
+        assertTrue(com.hongguotv.core.RecoveryBudget().remaining)
+        assertThrows(NoPlayableQualityException::class.java) {
+            throwNoOpenedStream(listOf(primary),null)
+        }
+    }
+
+    @Test fun cancellationIsNotConvertedIntoAnotherTierAttempt() {
+        assertTrue(cancelledPlayback(java.io.InterruptedIOException(" canceled")))
+        assertTrue(cancelledPlayback(java.net.SocketException("Canceled")))
+        assertFalse(cancelledPlayback(SocketTimeoutException("timeout")))
     }
 
     @Test fun twentyFiveFpsUsesFiftyHzDisplayCadence() {

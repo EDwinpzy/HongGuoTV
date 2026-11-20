@@ -2,8 +2,18 @@
 package com.hongguotv.core
 
 import okhttp3.Call
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.util.concurrent.TimeUnit
+
+/** A stalled route must not consume the whole playback recovery deadline. */
+internal object PlaybackRouteTransport {
+    const val TIMEOUT_MS = 8_000L
+    fun call(http: OkHttpClient, request: Request): Call =
+        http.newCall(request).apply { timeout().timeout(TIMEOUT_MS,TimeUnit.MILLISECONDS) }
+}
 
 /** Cancels only the work owned by one navigation/playback intent, including body reads. */
 class RequestScope {

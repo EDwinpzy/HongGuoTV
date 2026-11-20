@@ -343,7 +343,7 @@ internal class MultiVideoModelStreamSource(
                     }
                     .get()
                     .build()
-                val text = RequestScope.execute(http.newCall(request)) { response ->
+                val text = RequestScope.execute(PlaybackRouteTransport.call(http,request)) { response ->
                     if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
                     val body = response.body?.string().orEmpty()
                     trace?.response(PlaybackRequestTrace.Stage.GET, host, response.code, body.toByteArray(Charsets.UTF_8).size, response.protocol)
@@ -492,7 +492,8 @@ internal class MultiVideoModelStreamSource(
                 val data = transport.requestUrl(
                     "https://$host$PATH",
                     payload.toByteArray(Charsets.UTF_8),
-                    signedPlaybackHeaders(PATH, identity, payload.toByteArray(Charsets.UTF_8), host))
+                    signedPlaybackHeaders(PATH, identity, payload.toByteArray(Charsets.UTF_8), host),
+                    playbackRoute = true)
                 routes.success(route)
                 return data
             } catch (e: EmptyPlaybackResponseException) {
@@ -565,7 +566,7 @@ internal class MultiVideoModelStreamSource(
             .header("User-Agent", playbackUa)
             .header("Accept", "application/json")
             .build()
-        return RequestScope.execute(http.newCall(request)) { response ->
+        return RequestScope.execute(PlaybackRouteTransport.call(http,request)) { response ->
             if (!response.isSuccessful) throw IOException("红果片源接口 HTTP ${response.code}")
             val text = response.body?.string() ?: throw IOException("红果片源接口返回空正文")
             if (text.isEmpty()) throw IOException("红果片源接口返回空正文")

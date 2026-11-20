@@ -7,6 +7,8 @@ import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
+import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
 
 /** One playback stream. No listening socket or local HTTP service. */
 class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeable {
@@ -21,7 +23,11 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeab
         if(closed) throw IOException("播放请求已取消")
         require(start>=0 && end>=start && end-start<8*1024*1024)
         val request=Request.Builder().url(info.url).header("User-Agent",VendorConstants.VIDEO_UA).header("Referer","https://novel.snssdk.com/").header("Range","bytes=$start-$end").header("Accept-Encoding","identity").build()
-        val call=http.newCall(request)
+        val call=http.newCall(request).apply {
+            // A media range is small and bounded. Do not let the repository's 45s
+            // whole-call budget pin the decoder to one dead CDN connection.
+            timeout().timeout(15_000,TimeUnit.MILLISECONDS)
+        }
         synchronized(calls) { if(closed) throw IOException("播放请求已取消"); calls+=call }
         try {
             return RequestScope.execute(call) { response ->
@@ -68,8 +74,10 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeab
                     requests++
                     break
                 } catch(e: IOException) {
-                    val retryable=e is RetryableRangeException || e is java.net.SocketTimeoutException ||
-                        e is java.net.ConnectException || e is java.io.EOFException
+                    val causes=generateSequence(e as Throwable) { it.cause }.take(6).toList()
+                    val retryable=!closed && (causes.any { it is RetryableRangeException || it is SocketTimeoutException ||
+                        it is java.net.ConnectException || it is java.net.SocketException || it is java.io.EOFException } ||
+                        (e is java.net.ProtocolException && e.message?.contains("unexpected end of stream",ignoreCase=true)==true))
                     if(!retryable || retries>=2 || requests>=16 || Thread.currentThread().isInterrupted) throw e
                     retries++
                     try { Thread.sleep(140L*retries) }

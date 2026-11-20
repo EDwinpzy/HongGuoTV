@@ -28,7 +28,7 @@ class PlaybackDeviceSession(
         request.post(body.toRequestBody("application/octet-stream".toMediaType()))
         // Registration has no account cookies. Cancellation belongs to the requesting work scope.
         val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        RequestScope.execute(transport.newCall(request.build())) { response ->
+        RequestScope.execute(PlaybackRouteTransport.call(transport,request.build())) { response ->
             DeviceRegister.parse(cloudResponse(response), response.headers("Set-Cookie"))
         }
     }
