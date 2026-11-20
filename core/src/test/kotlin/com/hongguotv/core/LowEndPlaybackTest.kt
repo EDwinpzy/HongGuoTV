@@ -65,4 +65,11 @@ class LowEndPlaybackTest {
         val fresh=Resource(); slot.complete(slot.begin("next"),"next",fresh)
         assertTrue(old.closed); assertSame(fresh,slot.take("next")); assertFalse(fresh.closed)
     }
+
+    @Test fun playbackRoutesHaveAnIndependentBoundedDeadline() {
+        val call=PlaybackRouteTransport.call(OkHttpClient.Builder().callTimeout(45,TimeUnit.SECONDS).build(),
+            Request.Builder().url("https://example.test/video").build())
+        assertEquals(PlaybackRouteTransport.TIMEOUT_MS,call.timeout().timeoutNanos()/1_000_000)
+        assertTrue(PlaybackRouteTransport.TIMEOUT_MS<45_000)
+    }
 }

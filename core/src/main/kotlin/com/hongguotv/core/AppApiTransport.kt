@@ -185,11 +185,13 @@ internal class AppApiTransport(
      * were produced by the caller's six-header signature chain; this only sends and
      * validates the response envelope.
      */
-    fun requestUrl(url: String, body: ByteArray?, headers: Map<String,String>): JSONObject {
+    fun requestUrl(url: String, body: ByteArray?, headers: Map<String,String>, playbackRoute: Boolean = false): JSONObject {
         val builder = Request.Builder().url(url)
         for ((k,v) in headers) builder.header(k,v)
         if (body != null) builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-        return RequestScope.execute(http.newCall(builder.build())) { response ->
+        val request = builder.build()
+        val call = if (playbackRoute) PlaybackRouteTransport.call(http,request) else http.newCall(request)
+        return RequestScope.execute(call) { response ->
             if (!response.isSuccessful) throw IOException("App 接口请求失败（HTTP ${response.code}）")
             val text = response.body?.string() ?: throw IOException("App 接口响应为空")
             if (text.isEmpty()) throw AppApiEmptyResponseException()

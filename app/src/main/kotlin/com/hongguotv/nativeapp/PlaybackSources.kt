@@ -10,6 +10,8 @@ import com.hongguotv.core.VideoTracks
 import okhttp3.OkHttpClient
 import java.io.Closeable
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketException
 
 /**
  * One opened playback tier (upstream OpenedStream, 2026-11-14 port). Carries the whole
@@ -62,7 +64,12 @@ internal fun primaryPlaybackAttempts(
     // try the highest requested primary once even when a stale failure was learned.
     val force=when {
         retryLearned -> best(primary)
-        supported.isEmpty() -> best(primary)?.takeIf { !learnedFailure(it) }
+        // The static probe and the learned record are both heuristics. When no
+        // primary tier is otherwise eligible, still give the best one a real
+        // ExoPlayer attempt: a stale one-off failure must not turn a playable
+        // episode into NoPlayableQualityException. A genuine failure is learned
+        // again and handled by the normal recovery path.
+        supported.isEmpty() -> best(primary)
         else -> null
     }
     return buildList {
@@ -115,10 +122,12 @@ internal fun openStream(
                 if (it.forced) "(best effort)" else ""
         },
     )
-    var lastError: Exception? = null
+    var primaryError: Exception? = null
+    var attemptedPrimary=false
     for ((tier,forced) in primaryOrder) {
         val video = RemoteVideo(http, tier)
         try {
+            attemptedPrimary=true
             Log.i(
                 "HongguoTV",
                 "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}" +
@@ -149,7 +158,8 @@ internal fun openStream(
             video.close()
         } catch (error: Exception) {
             video.close()
-            lastError = error
+            if(cancelledPlayback(error)) throw error
+            primaryError = error
             Log.w("HongguoTV", "Playback tier failed: ${tier.quality}/${tier.codec}: ${error.message}")
         }
     }
@@ -169,16 +179,29 @@ internal fun openStream(
             video.close()
         } catch (error: Exception) {
             video.close()
-            lastError = error
+            if(cancelledPlayback(error)) throw error
+            if(primaryError==null && primary.isEmpty()) primaryError=error
             Log.w("HongguoTV", "Playback fallback failed: ${tier.quality}: ${error.message}")
         }
     }
-    if (ladder.isNotEmpty()) {
-        if (lastError != null && primary.isEmpty()) throw lastError
-        throw NoPlayableQualityException()
-    }
+    if (ladder.isNotEmpty()) throwNoOpenedStream(ladder, primaryError.takeIf { attemptedPrimary || primary.isEmpty() })
     return null
 }
+
+internal fun throwNoOpenedStream(ladder: List<StreamInfo>, lastError: Exception?): Nothing {
+    // No candidate was opened: preserve the actual transport failure so the
+    // caller can recover. A timeout/reset is not evidence that the TV cannot
+    // decode any tier (and must not disable the automatic recovery budget).
+    if (lastError != null) throw lastError
+    if (ladder.isNotEmpty()) throw NoPlayableQualityException()
+    throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+}
+
+internal fun cancelledPlayback(error: Throwable): Boolean =
+    Thread.currentThread().isInterrupted || generateSequence(error) { it.cause }.take(8).any {
+        (it is InterruptedIOException && it !is java.net.SocketTimeoutException) ||
+            (it is SocketException && it.message?.contains("cancel",ignoreCase=true)==true)
+    }
 
 /** Lowest ladder tier strictly below the attempted quality; null = no dead-end button. */
 internal fun nextLowerQuality(attempted: Int, tiers: List<StreamInfo>): Int? =

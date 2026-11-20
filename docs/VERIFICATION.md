@@ -239,6 +239,37 @@
 | 签名 | PASS | APK v2 签名通过，证书 SHA-256 为 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5` |
 | 产物摘要 | PASS | APK SHA-256 `32897950ECF3D58DDAF77690FB8BB639ACF9352167D1471F85FE7515B54F3A0E`；AAB SHA-256 `0C6A58BAFF8FC9483AADCD01AAC87D98071E1FC8D1521E72F96F27FA8E590CD5` |
 
+## 2026-11-21 播放超时与 S621 黑屏修复（Release 实机）
+
+验证分支为 `codex/playback-connection-timeout`，验证包基于 `1.1.7 / 10107` 构建并使用原 Release 签名覆盖安装到 S621。
+
+根因有两层：
+
+- 《阳谋正道》第 37 集只返回单一 `1080P/bytevc1/1922x1080` 档位。解码器实际支持 1080P，但旧的持久化失败记录按原始编码宽度 `1922` 保存，后续选流又按 `1920` 查询，单档被全部过滤后抛出 `NoPlayableQualityException`（R8 映射为 `J1`）；网页兜底同时返回 HTTP 403。
+- S621 的 `SurfaceView` 会被平台 HWComposer Overlay 路径丢弃，播放器仍在走时只有声音、没有可见视频层。
+
+本轮修复：
+
+- 播放 API、设备注册、网页兜底和媒体分段请求各自限时（播放通道 8 秒、媒体分段 15 秒），单个卡死线路不再耗尽整轮恢复预算。
+- 媒体分段可对 Socket/EOF/异常正文截断续读；取消请求不再被当作网络故障或继续尝试其他档位；主链路真实网络错误不再被误报成“无可播放清晰度”。
+- `1922x1080`、`1282x720`、`962x540` 等对齐尺寸按 `1920x1080`、`1280x720`、`960x540` 探测解码能力并共享同一条失败记录。
+- 同一档位首次解码失败只进入观察期，重复失败才持久化拒绝；连续播放 15 秒后，成功记录会清除该档位的旧失败记录，避免“首帧能放、10 秒后解码失败”的档位被误判为健康。
+- 某集的主档位全部被过滤时，仍允许最优档位进行一次真实 ExoPlayer 尝试；只有真实解码失败才进入恢复流程。
+- S621 播放视图改回 `TextureView`，避免 Overlay 层被系统丢弃导致黑屏。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 单一 1080P 档位 | PASS | 第 37 集选流为 `1080P/bytevc1/1922x1080`，`Playback first frame episode=37 ... elapsedMs=1135`；持续播放后旧失败记录被 `Cleared stale decoder failure after successful frame: hevc|1920|1080` 自动清除 |
+| 重复验证 | PASS | 重新进入第 37 集，`Playback candidates ...=true`，首帧 `elapsedMs=1310`，画面正常 |
+| 1080P 恢复播放 | PASS | 首页“接着看”第 38 集从 19.8 秒恢复，首帧 `elapsedMs=2901`，画面正常 |
+| 连续切集 | PASS | 第 37→38→39 集连续切换，后两次均 `preloaded=true reused=true`，首帧分别为 `233ms`、`266ms` |
+| 远距离拖动 | PASS | 拖到约 74 秒触发 `STATE_BUFFERING`，`stalledMs=1484` 后恢复；继续拖到 91.9 秒，`stalledMs=795` 后恢复，未出现播放失败 |
+| 黑屏回归 | PASS | `SurfaceView` 版本在同一集上仅声音无画面；改为 `TextureView` 后，恢复播放、单档 1080P、连续切集和拖动后 ADB 截图均持续显示视频画面 |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；263 项测试、0 失败、0 错误、9 跳过 |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；候选 APK SHA-256 `08FAA05A31FEDF296F4CE22F6B03C353FDA2E8C9E0A82A5FEE3CAB19A3EFC9A6`，AAB SHA-256 `2BAA0E5BC658B01A397ED3D73D0C3F1110968B33C62C0BF06D1B523B62D7C9F1` |
+
+限制：S621 输入均为 ADB 注入，未使用物理遥控器；ADB `screencap` 与日志已确认视频层出画，但未用外部相机对投影幕布做独立人工拍摄确认。本轮尚未提升版本号或创建 GitHub Release。
+
 ## 未验证或有限制
 
 | 项目 | 状态 | 说明 |

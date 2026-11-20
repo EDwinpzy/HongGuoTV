@@ -66,6 +66,8 @@ class MainActivity: Activity() {
     private var currentTrack: VideoTracks.Track?=null
     private var currentTier: StreamInfo?=null
     private var currentTiers: List<StreamInfo> = emptyList()
+    private var failureLearnedForAttempt=false
+    private var capabilityConfirmedForAttempt=false
     private lateinit var artwork: ArtworkLoader
     private data class DeferredUi(val apply: ()->Unit,val discard: ()->Unit={})
     private var deferredWork: DeferredUi?=null
@@ -375,6 +377,14 @@ class MainActivity: Activity() {
                 danmakuOverlay?.let { overlay ->
                     val p=player
                     if(p!=null && playbackReady && !playError) overlay.update(p.currentPosition,p.playbackParameters.speed,p.isPlaying)
+                }
+                val playing=player
+                if(!capabilityConfirmedForAttempt && playbackReady && !playError && playing?.isPlaying==true &&
+                    playing.currentPosition>=15_000) {
+                    capabilityConfirmedForAttempt=true
+                    val track=currentTrack
+                    if(track!=null) CodecCapabilities.confirmPlayable(track.fourcc,track.width,track.height)
+                    else currentTier?.let { CodecCapabilities.confirmPlayable(it.codec,it.width,it.height) }
                 }
                 val now=android.os.SystemClock.elapsedRealtime()
                 if(player?.isPlaying==true && now-lastSaved>5000) { saveProgress(); lastSaved=now }
@@ -2576,6 +2586,7 @@ class MainActivity: Activity() {
         // A fresh episode resets the downgrade budget; an auto-downgrade retry keeps it.
         if(!autoDowngrade) autoDowngrades=0
         attemptedQuality=0; currentTrack=null; currentTier=null; currentTiers=emptyList()
+        failureLearnedForAttempt=false; capabilityConfirmedForAttempt=false
         player?.playWhenReady=requestedAutoplay
         prefetchRetryAt=0; prefetchNextAt=0
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -3014,9 +3025,12 @@ class MainActivity: Activity() {
         if(!noPlayableQuality && problem is PlaybackException &&
             problem.errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED) {
             val track=currentTrack; val tier=currentTier
-            when {
-                track!=null -> CodecCapabilities.learnFailure(track.fourcc,track.width,track.height)
-                tier!=null -> CodecCapabilities.learnFailure(tier.codec,tier.width,tier.height)
+            if(!failureLearnedForAttempt) {
+                failureLearnedForAttempt=true
+                when {
+                    track!=null -> CodecCapabilities.learnFailure(track.fourcc,track.width,track.height)
+                    tier!=null -> CodecCapabilities.learnFailure(tier.codec,tier.width,tier.height)
+                }
             }
             if(shouldAutoDowngrade(autoDowngrades,2,currentTiers,attemptedQuality)) {
                 autoDowngrades++
