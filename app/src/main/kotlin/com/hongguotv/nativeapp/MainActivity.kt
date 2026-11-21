@@ -237,6 +237,8 @@ class MainActivity: Activity() {
     private var playbackPoster: ImageView?=null
     private var danmakuOverlay: DanmakuOverlay?=null
     private var danmakuJob: java.util.concurrent.Future<*>?=null
+    @Volatile private var danmakuDurationMs=0L
+    @Volatile private var danmakuPlayheadMs=0L
     private var playerChannelNav: LinearLayout?=null
     private val playerChannelButtons=mutableListOf<View>()
     private lateinit var favoriteMonitor: FavoriteMonitor
@@ -376,7 +378,10 @@ class MainActivity: Activity() {
                 if(recommendationFeedMode) prefetchRecommendationFeedStream() else prefetchAhead()
                 danmakuOverlay?.let { overlay ->
                     val p=player
-                    if(p!=null && playbackReady && !playError) overlay.update(p.currentPosition,p.playbackParameters.speed,p.isPlaying)
+                    if(p!=null && playbackReady && !playError) {
+                        danmakuPlayheadMs=p.currentPosition
+                        overlay.update(p.currentPosition,p.playbackParameters.speed,p.isPlaying)
+                    }
                 }
                 val playing=player
                 if(!capabilityConfirmedForAttempt && playbackReady && !playError && playing?.isPlaying==true &&
@@ -2563,6 +2568,7 @@ class MainActivity: Activity() {
         firstFrameWatchdog=null
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
+        stopDanmakuFetch()
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
         val playQuality=if(recommendationFeedMode) recommendationQuality else library.maxQuality
@@ -2594,6 +2600,7 @@ class MainActivity: Activity() {
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
+        danmakuDurationMs=0L; danmakuPlayheadMs=0L
         // A fresh episode resets the downgrade budget; an auto-downgrade retry keeps it.
         if(!autoDowngrade) autoDowngrades=0
         attemptedQuality=0; currentTrack=null; currentTier=null; currentTiers=emptyList()
@@ -2673,7 +2680,6 @@ class MainActivity: Activity() {
         if(recommendationFeedMode) showRecommendationInfo(data) else hideRecommendationInfo()
         syncMediaSession()
         // 弹幕：切集重置，清空 overlay 待发射队列（旧集残余），重新拉取本集弹幕
-        stopDanmakuFetch()
         danmakuOverlay?.shutdown()
         if(library.danmaku && danmakuOverlay!=null) startDanmakuFetch()
         val requestedId=data.episodes[episodeIndex]; val maxQuality=playQuality; val ticket=generation
@@ -2801,6 +2807,7 @@ class MainActivity: Activity() {
                             return
                         }
                         playbackReady=true
+                        danmakuDurationMs=p.duration.takeIf { it>0 && it!=C.TIME_UNSET } ?: 0L
                         playbackSpinner?.visibility=View.GONE
                         if(firstFrame && firstFrameWatchdog==null) {
                             firstFrameWatchdog=watchdog
@@ -3247,7 +3254,7 @@ class MainActivity: Activity() {
         if(sleepStopped) { playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"; return }
         if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
         val p=player ?: return
-        val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
+        val duration=p.duration.takeIf { it!=C.TIME_UNSET }?.coerceAtLeast(0) ?: 0; val position=pendingSeek ?: p.currentPosition
         val parts=mutableListOf("${formatTime(position)} / ${formatTime(duration)}")
         if(quality.isNotBlank() || currentTrack!=null) parts+=actualQualityText()
         if(p.playbackParameters.speed!=1f) parts+=PlaybackSpeed.label(p.playbackParameters.speed)
@@ -3386,6 +3393,7 @@ class MainActivity: Activity() {
         stopDanmakuFetch()
         android.util.Log.i("HongguoTV","Danmaku fetch start episode=$videoId series=$seriesId")
         danmakuJob=io.submit {
+            Thread.interrupted()
             android.util.Log.i("HongguoTV","Danmaku job running thread=${Thread.currentThread().name} episode=$videoId")
             val fetchPlan=DanmakuFetchPlan()
             val seen=mutableSetOf<String>()
@@ -3393,7 +3401,11 @@ class MainActivity: Activity() {
             var failures=0
             try {
                 while(!Thread.currentThread().isInterrupted) {
-                    val duration=player?.duration?.takeIf { it>0 } ?: 600_000L
+                    val duration=danmakuDurationMs
+                    if(duration<=0L) {
+                        Thread.sleep(500L)
+                        continue
+                    }
                     val request=fetchPlan.request()
                     val page=try {
                         repository.danmakuPage(videoId,seriesId,request.timeMs,duration,request.cursor)
@@ -3426,7 +3438,7 @@ class MainActivity: Activity() {
                             }
                         }
                     }
-                    val advance=fetchPlan.next(page,player?.currentPosition ?: 0)
+                    val advance=fetchPlan.next(page,danmakuPlayheadMs)
                     android.util.Log.i("HongguoTV","Danmaku window=${request.timeMs/1000}s items=${fresh.size} next=${page.nextCursorMs/1000}s cursor=${page.cursor.isNotEmpty()} more=${page.hasMore} duration=${duration/1000}s")
                     if(advance==null) {
                         android.util.Log.i("HongguoTV","Danmaku fetch reached duration episode=$videoId window=${request.timeMs/1000}s duration=${duration/1000}s")
@@ -3435,6 +3447,8 @@ class MainActivity: Activity() {
                     if(advance.waitMs>0) Thread.sleep(advance.waitMs)
                 }
             } catch(e: InterruptedException) {
+            } catch(e: Throwable) {
+                android.util.Log.e("HongguoTV","Danmaku worker failed episode=$videoId",e)
             } finally {
                 Thread.interrupted()
             }
@@ -3623,11 +3637,12 @@ class MainActivity: Activity() {
     private fun formatTime(millis: Long): String { val seconds=(millis.coerceAtLeast(0)/1000); return "%02d:%02d".format(seconds/60,seconds%60) }
     private fun saveProgress(completed: Boolean=false) {
         val p=player ?: return; val data=detail ?: return; if(!playbackReady || episodeIndex !in data.episodes.indices) return
-        library.save(WatchProgress(data.series,data.episodes[episodeIndex],episodeIndex,p.currentPosition.coerceAtLeast(0),p.duration.coerceAtLeast(0),completed || p.playbackState==Player.STATE_ENDED,System.currentTimeMillis()))
+        val duration=p.duration.takeIf { it!=C.TIME_UNSET }?.coerceAtLeast(0) ?: 0
+        library.save(WatchProgress(data.series,data.episodes[episodeIndex],episodeIndex,p.currentPosition.coerceAtLeast(0),duration,completed || p.playbackState==Player.STATE_ENDED,System.currentTimeMillis()))
         // Logged-in sessions mirror the same checkpoint to the account (upstream 0.1.26):
         // throttled to one upload per 30s while playing, forced on pause/exit/episode end.
         cloudAccount.upload(
-            CloudProgress(data.series,data.episodes[episodeIndex],episodeIndex,p.currentPosition.coerceAtLeast(0),p.duration.coerceAtLeast(0),System.currentTimeMillis()),
+            CloudProgress(data.series,data.episodes[episodeIndex],episodeIndex,p.currentPosition.coerceAtLeast(0),duration,System.currentTimeMillis()),
             data.episodes.size,
             completed || !p.isPlaying || !foreground,
         )
