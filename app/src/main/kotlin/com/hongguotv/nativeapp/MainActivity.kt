@@ -3137,7 +3137,7 @@ class MainActivity: Activity() {
     private fun showHud() {
         if(screen!="player" || recommendationFeedMode) return
         hud.visibility=View.VISIBLE
-        playerChannelNav?.visibility=if(panel) View.VISIBLE else View.GONE
+        playerChannelNav?.visibility=View.GONE
         updatePlaybackText()
     }
     /** video-pro style transport: one play button, elapsed / scrubber / remaining. */
@@ -3285,7 +3285,7 @@ class MainActivity: Activity() {
         if(playError) return
         panel=true
         controls.visibility=View.VISIBLE
-        playerChannelNav?.visibility=View.VISIBLE
+        playerChannelNav?.visibility=if(recommendationFeedMode) View.VISIBLE else View.GONE
         showHud()
         transportPlay?.requestFocus()
     }
