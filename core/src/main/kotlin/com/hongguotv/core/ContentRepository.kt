@@ -149,9 +149,14 @@ class ContentRepository(
     /** Danmaku list client (30s window pagination; dedup/merge handled by the caller). */
     private val danmakuClient = DanmakuRepository(http, appApi)
 
-    /** One danmaku window: [startOffsetMs] follows the previous page's nextCursorMs. */
-    fun danmakuPage(videoId: String, seriesId: String, startOffsetMs: Long, durationMs: Long): DanmakuPage =
-        danmakuClient.page(videoId, seriesId, startOffsetMs, durationMs)
+    /** One danmaku page, including its independent time and list cursors. */
+    fun danmakuPage(
+        videoId: String,
+        seriesId: String,
+        startOffsetMs: Long,
+        durationMs: Long,
+        cursor: String = "",
+    ): DanmakuPage = danmakuClient.page(videoId, seriesId, startOffsetMs, durationMs, cursor)
 
     // ---------- catalog (App landpage) ----------
 

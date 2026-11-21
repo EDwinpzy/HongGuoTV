@@ -3376,7 +3376,7 @@ class MainActivity: Activity() {
     }
     /** 弹幕只绘制在顶部的数行内；限制 View 高度，避免透明层每帧参与全屏合成。 */
     private fun danmakuLayoutParams()=FrameLayout.LayoutParams(-1,(resources.displayMetrics.heightPixels*.45f).toInt(),Gravity.TOP)
-    /** 后台持续拉取真实弹幕：跟随播放进度逐窗口推进直到片尾，网络失败重试不退出。
+    /** 后台持续拉取真实弹幕：同时跟随时间与服务端列表游标，网络失败重试不退出。
      *  旧实现一次性预取全部窗口后 break——短剧 7.5s 拉完就再无新弹幕（播到一半弹幕消失）、
      *  一页失败整个循环退出（有时没弹幕）、切集瞬间在途数据被丢（开局弹幕闪现即失）。 */
     private fun startDanmakuFetch() {
@@ -3387,21 +3387,22 @@ class MainActivity: Activity() {
         android.util.Log.i("HongguoTV","Danmaku fetch start episode=$videoId series=$seriesId")
         danmakuJob=io.submit {
             android.util.Log.i("HongguoTV","Danmaku job running thread=${Thread.currentThread().name} episode=$videoId")
-            var cursor=0L
+            val fetchPlan=DanmakuFetchPlan()
             val seen=mutableSetOf<String>()
             val seenTexts=DanmakuTextDeduper()
             var failures=0
             try {
                 while(!Thread.currentThread().isInterrupted) {
                     val duration=player?.duration?.takeIf { it>0 } ?: 600_000L
+                    val request=fetchPlan.request()
                     val page=try {
-                        repository.danmakuPage(videoId,seriesId,cursor,duration)
+                        repository.danmakuPage(videoId,seriesId,request.timeMs,duration,request.cursor)
                     } catch(e: Exception) {
                         failures++
                         val delayMs=minOf(15_000L,2_000L*failures)
                         android.util.Log.w(
                             "HongguoTV",
-                            "Danmaku retry episode=$videoId window=${cursor/1000}s attempt=$failures in=${delayMs}ms ${e.javaClass.simpleName}: ${e.message}",
+                            "Danmaku retry episode=$videoId window=${request.timeMs/1000}s attempt=$failures in=${delayMs}ms ${e.javaClass.simpleName}: ${e.message}",
                             if(failures==1) e else null,
                         )
                         Thread.sleep(delayMs)
@@ -3425,16 +3426,13 @@ class MainActivity: Activity() {
                             }
                         }
                     }
-                    android.util.Log.i("HongguoTV","Danmaku window=${cursor/1000}s items=${fresh.size} next=${page.nextCursorMs/1000}s duration=${duration/1000}s")
-                    if(page.nextCursorMs<=cursor || page.nextCursorMs<0) {
-                        android.util.Log.i("HongguoTV","Danmaku fetch complete episode=$videoId window=${cursor/1000}s")
+                    val advance=fetchPlan.next(page,player?.currentPosition ?: 0)
+                    android.util.Log.i("HongguoTV","Danmaku window=${request.timeMs/1000}s items=${fresh.size} next=${page.nextCursorMs/1000}s cursor=${page.cursor.isNotEmpty()} more=${page.hasMore} duration=${duration/1000}s")
+                    if(advance==null) {
+                        android.util.Log.i("HongguoTV","Danmaku fetch reached duration episode=$videoId window=${request.timeMs/1000}s duration=${duration/1000}s")
                         break
                     }
-                    cursor=page.nextCursorMs
-                    if(cursor>=duration) {
-                        android.util.Log.i("HongguoTV","Danmaku fetch reached duration episode=$videoId cursor=${cursor/1000}s duration=${duration/1000}s")
-                        break
-                    }
+                    if(advance.waitMs>0) Thread.sleep(advance.waitMs)
                 }
             } catch(e: InterruptedException) {
             } finally {
