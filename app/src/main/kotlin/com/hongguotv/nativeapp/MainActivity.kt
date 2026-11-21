@@ -3353,6 +3353,7 @@ class MainActivity: Activity() {
         cancelRecommendationFeedJobs()
         hideRecommendationInfo()
         setPlayerChannelFocusable(true)
+        if(library.danmaku && danmakuOverlay!=null && danmakuJob?.isDone!=false) startDanmakuFetch()
         showPanel()
         syncMediaSession()
     }
@@ -3383,7 +3384,9 @@ class MainActivity: Activity() {
         val videoId=data.episodes.getOrNull(episodeIndex) ?: return
         val seriesId=data.series.id
         stopDanmakuFetch()
+        android.util.Log.i("HongguoTV","Danmaku fetch start episode=$videoId series=$seriesId")
         danmakuJob=io.submit {
+            android.util.Log.i("HongguoTV","Danmaku job running thread=${Thread.currentThread().name} episode=$videoId")
             var cursor=0L
             val seen=mutableSetOf<String>()
             val seenTexts=DanmakuTextDeduper()
@@ -3395,8 +3398,13 @@ class MainActivity: Activity() {
                         repository.danmakuPage(videoId,seriesId,cursor,duration)
                     } catch(e: Exception) {
                         failures++
-                        if(failures>5) break
-                        Thread.sleep(3000L*failures)
+                        val delayMs=minOf(15_000L,2_000L*failures)
+                        android.util.Log.w(
+                            "HongguoTV",
+                            "Danmaku retry episode=$videoId window=${cursor/1000}s attempt=$failures in=${delayMs}ms ${e.javaClass.simpleName}: ${e.message}",
+                            if(failures==1) e else null,
+                        )
+                        Thread.sleep(delayMs)
                         continue
                     }
                     failures=0
@@ -3419,10 +3427,14 @@ class MainActivity: Activity() {
                     }
                     android.util.Log.i("HongguoTV","Danmaku window=${cursor/1000}s items=${fresh.size} next=${page.nextCursorMs/1000}s duration=${duration/1000}s")
                     if(page.nextCursorMs<=cursor || page.nextCursorMs<0) {
+                        android.util.Log.i("HongguoTV","Danmaku fetch complete episode=$videoId window=${cursor/1000}s")
                         break
                     }
                     cursor=page.nextCursorMs
-                    if(cursor>=duration) break
+                    if(cursor>=duration) {
+                        android.util.Log.i("HongguoTV","Danmaku fetch reached duration episode=$videoId cursor=${cursor/1000}s duration=${duration/1000}s")
+                        break
+                    }
                 }
             } catch(e: InterruptedException) {
             } finally {

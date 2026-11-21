@@ -7,6 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /** One danmaku comment at its video-relative position. */
 data class DanmakuItem(val id: String, val timeMs: Long, val text: String)
@@ -319,7 +320,11 @@ internal class DanmakuRepository(
             .header("X-SS-STUB", "")
         for ((k, v) in signed.headers) builder.header(k, v)
         builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-        return RequestScope.execute(http.newCall(builder.build())) { response ->
+        // The shared client has a 45s call timeout, but a stalled TLS/route handshake
+        // can sit in execute() longer than the player's whole episode. Give danmaku
+        // its own short deadline so the retry loop actually observes the failure.
+        val call=http.newCall(builder.build()).apply { timeout().timeout(8, TimeUnit.SECONDS) }
+        return RequestScope.execute(call) { response ->
             if (!response.isSuccessful) throw IOException("弹幕接口请求失败（HTTP ${response.code}）")
             val text = response.body?.string() ?: throw IOException("弹幕接口响应为空")
             if (text.isEmpty()) throw IOException("弹幕接口返回空数据")
