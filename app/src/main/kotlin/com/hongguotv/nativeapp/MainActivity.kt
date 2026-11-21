@@ -84,7 +84,6 @@ class MainActivity: Activity() {
     private var collection: String?=null
     private var collectionReturn: CatalogState?=null
     private var collectionFocus=""
-    private var collectionBack: View?=null
     private var homeGridFocus=false
     private var homeResetDone=false
     /** True while a tab switch was triggered by focus landing on another nav button. */
@@ -411,6 +410,16 @@ class MainActivity: Activity() {
         }
         return false
     }
+    private fun clearPlayerChannelFocus() {
+        playerChannelButtons.forEach { if(it.hasFocus()) it.clearFocus() }
+    }
+    private fun setPlayerChannelFocusable(enabled: Boolean) {
+        playerChannelButtons.forEach {
+            it.isFocusable=enabled
+            it.isFocusableInTouchMode=enabled
+            if(!enabled && it.hasFocus()) it.clearFocus()
+        }
+    }
     private fun focusStyle(view: View,selected: Boolean=false) {
         view.id=View.generateViewId(); view.isFocusable=true; view.isFocusableInTouchMode=true
         fun paint(focused: Boolean) {
@@ -535,14 +544,9 @@ class MainActivity: Activity() {
         container.setPadding(horizontal,vertical,horizontal,vertical); root.addView(container,FrameLayout.LayoutParams(-1,-1))
         if(title!=null) {
             val heading=row().apply { setPadding(0,0,0,dp(9)) }
-            val back=button("‹") { goBack() }.apply {
-                textSize=27f; gravity=Gravity.CENTER; contentDescription="返回"
-                setPadding(0,0,0,dp(3))
-            }
-            heading.addView(back,lp(dp(40),dp(40)))
             heading.addView(text(title,28f).apply {
                 typeface=TvStyle.titleTypeface(); letterSpacing=(-.02f); gravity=Gravity.CENTER_VERTICAL
-            },lp(0,dp(40)).apply { weight=1f; leftMargin=dp(9) })
+            },lp(0,dp(40)).apply { weight=1f })
             container.addView(heading)
         }
         return container
@@ -572,7 +576,7 @@ class MainActivity: Activity() {
         catalogBody=null; gridList=null; gridScroll=null; gridCards.clear(); gridFlatIndex.clear(); gridLoadingRow=null
         homeScreen=null; selectionPreview=null; catalogScroll=null; settingsScroll=null
         nav.clear(); rankButtons.clear()
-        historyManage=null; rankRefresh=null; collectionBack=null; favoriteBadges.clear()
+        historyManage=null; rankRefresh=null; favoriteBadges.clear()
         favoriteCheck=null; tabRefresh=null; accountButton=null
         themeButtons.clear(); themeScroll=null
         catalogCards.clear(); cardImages.clear()
@@ -720,6 +724,14 @@ class MainActivity: Activity() {
         switchTab(index)
         nav.firstOrNull { it.tag=="nav:$index" || it.tag=="channel:$index" }?.requestFocus()
     }
+    /** Preview uses a deliberately non-standard D-pad map: left/right cycles the top tabs. */
+    private fun switchPreviewChannel(direction: Int) {
+        val tabs=listOf(0,TAB_RECOMMEND,1,2,3,4,5,6,7,8,9)
+        val current=tabs.indexOf(tab)
+        if(current<0) return
+        val target=(current+direction).coerceIn(0,tabs.lastIndex)
+        if(target!=current) openChannelTab(tabs[target])
+    }
     private fun switchTab(next: Int) {
         if(next==tab) return
         prepareForChannelSwitch()
@@ -802,7 +814,6 @@ class MainActivity: Activity() {
         })
         val actions=row()
         val retry=addButton(actions,"重试") { enterRecommendationFeed(fresh=true) }
-        addButton(actions,"返回首页") { exitRecommendationFeed() }
         panel.addView(actions)
         root.addView(panel,FrameLayout.LayoutParams(dp(560),-2,Gravity.CENTER))
         retry.requestFocus()
@@ -899,6 +910,7 @@ class MainActivity: Activity() {
         val item=recommendationFeedItems.getOrNull(index) ?: return
         recommendationFeedSwitching=true; recommendationFeedPendingDirection=0
         if(screen=="player") hidePlaybackOverlay()
+        clearPlayerChannelFocus()
         maybeLoadNextRecommendationFeedPage(index)
         // Keep the current episode playing while the next detail is resolved. It is
         // paused only when playEpisode swaps the media source.
@@ -1437,16 +1449,12 @@ class MainActivity: Activity() {
         // here. renderHome re-shows it below when it is still waiting for first data.
         hideLoading()
         if(tab==0 && page==1 && collection==null) { renderHome(body,focusNav,focusType,loading); return }
-        catalogCards.clear(); cardImages.clear(); collectionBack=null
+        catalogCards.clear(); cardImages.clear()
         if(collection!=null) {
             val heading=row().apply { setPadding(0,0,0,dp(4)) }
-            collectionBack=addButton(heading,"‹ 返回") { leaveCollection(); showCatalog() }.apply {
-                nextFocusUpId=navFor(tab).id
-                nextFocusDownId=id
-            }
             heading.addView(text(when(collection) { "later" -> "稍后看"; "updates" -> "收藏有更新"; else -> "接着看" },26f).apply {
                 typeface=TvStyle.titleTypeface(); letterSpacing=(-.02f)
-            },lp(0,-2).apply { leftMargin=dp(10) })
+            },lp(0,-2))
             body.addView(heading)
         }
         // Infinite grids append pages in place, so their scroll key ignores the page number.
@@ -1466,7 +1474,7 @@ class MainActivity: Activity() {
             if(themeFocusSlug!=null) { val slug=themeFocusSlug; themeFocusSlug=null; themeButtons[slug]?.requestFocus() ?: navFor(tab).requestFocus() }
             // Focus already sits on a theme button (empty theme result): leave it there.
             else if((tab==1 || tab==2 || tab==3) && themeButtons.values.any { it.hasFocus() }) Unit
-            else if(focusType) rankButtons[rankFocusBoard ?: library.rankBoard]?.requestFocus() ?: navFor(tab).requestFocus() else if(collectionBack!=null && !focusNav) collectionBack?.requestFocus() else navFor(tab).requestFocus()
+            else if(focusType) rankButtons[rankFocusBoard ?: library.rankBoard]?.requestFocus() ?: navFor(tab).requestFocus() else navFor(tab).requestFocus()
             return
         }
         val cards=mutableListOf<View>(); val count=7; val gap=dp(14); val width=((resources.displayMetrics.widthPixels*.92f-gap*(count-1))/count).toInt()
@@ -1506,7 +1514,7 @@ class MainActivity: Activity() {
         cards.forEachIndexed { index,card ->
             card.nextFocusLeftId=if(index%count==0) card.id else cards[index-1].id
             card.nextFocusRightId=if(index%count==count-1 || index==cards.lastIndex) card.id else cards[index+1].id
-            card.nextFocusUpId=if(index<count) (collectionBack?.id ?: themeButtons[themeSlug]?.id ?: tabRefresh?.id ?: favoriteCheck?.id ?: historyManage?.id ?: rankButtons[library.rankBoard]?.id ?: navFor(tab).id) else cards[index-count].id
+            card.nextFocusUpId=if(index<count) (themeButtons[themeSlug]?.id ?: tabRefresh?.id ?: favoriteCheck?.id ?: historyManage?.id ?: rankButtons[library.rankBoard]?.id ?: navFor(tab).id) else cards[index-count].id
         }
         nav.forEach { it.nextFocusDownId=if(infiniteScroll && tab!=5) (themeButtons[themeSlug]?.id ?: cards.first().id) else tabRefresh?.id ?: rankButtons[library.rankBoard]?.id ?: rankRefresh?.id ?: favoriteCheck?.id ?: historyManage?.id ?: cards.first().id }
         themeButtons.values.forEach { it.nextFocusDownId=cards.first().id }
@@ -1515,7 +1523,6 @@ class MainActivity: Activity() {
         tabRefresh?.nextFocusDownId=cards.first().id
         historyManage?.nextFocusDownId=cards.first().id
         favoriteCheck?.nextFocusDownId=cards.first().id
-        collectionBack?.nextFocusDownId=cards.first().id
         when {
             homeGridFocus -> { homeGridFocus=false; cards.first().requestFocus() }
             rankFocusBoard!=null -> { val board=rankFocusBoard; rankFocusBoard=null; rankButtons[board]?.requestFocus() ?: navFor(tab).requestFocus() }
@@ -1636,7 +1643,7 @@ class MainActivity: Activity() {
         cards.forEachIndexed { index,card ->
             card.nextFocusLeftId=if(index%count==0) card.id else cards[index-1].id
             card.nextFocusRightId=if(index%count==count-1 || index==cards.lastIndex) card.id else cards[index+1].id
-            card.nextFocusUpId=if(index<count) (collectionBack?.id ?: themeButtons[themeSlug]?.id ?: tabRefresh?.id ?: favoriteCheck?.id ?: historyManage?.id ?: rankButtons[library.rankBoard]?.id ?: navFor(tab).id) else cards[index-count].id
+            card.nextFocusUpId=if(index<count) (themeButtons[themeSlug]?.id ?: tabRefresh?.id ?: favoriteCheck?.id ?: historyManage?.id ?: rankButtons[library.rankBoard]?.id ?: navFor(tab).id) else cards[index-count].id
             card.nextFocusDownId=if(index+count<cards.size) cards[index+count].id else card.id
         }
     }
@@ -3085,8 +3092,7 @@ class MainActivity: Activity() {
         }
         if(recommendationFeedMode) {
             addButton(actions,"下一条推荐") { switchRecommendationFeed(1) }
-            addButton(actions,"退出推荐") { returnToDetail() }
-        } else addButton(actions,"返回选集") { returnToDetail() }
+        }
         if(retryable && !sleepStopped && !noPlayableQuality) {
             addButton(controls,"停止自动重试") { cancelRecovery(); playbackText.text="自动重试已停止，观看位置已保留。" }
             autoRecovery=true; scheduleRecovery()
@@ -3095,7 +3101,7 @@ class MainActivity: Activity() {
     }
     private fun hidePlaybackOverlay() {
         panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
-        playerChannelNav?.visibility=View.GONE
+        playerChannelNav?.visibility=if(recommendationFeedMode) View.VISIBLE else View.GONE
     }
     /**
      * Recommendation preview stays visually separate from the normal player: title and
@@ -3104,6 +3110,7 @@ class MainActivity: Activity() {
      */
     private fun showRecommendationInfo(data: Detail) {
         recommendationInfo?.let { root.removeView(it) }
+        setPlayerChannelFocusable(false)
         val pad=dp(widthDp()*.042f)
         val info=column().apply {
             setPadding(pad,dp(18),pad,dp(26))
@@ -3132,7 +3139,7 @@ class MainActivity: Activity() {
         recommendationInfo=null
     }
     private fun showHud() {
-        if(screen!="player") return
+        if(screen!="player" || recommendationFeedMode) return
         hud.visibility=View.VISIBLE
         playerChannelNav?.visibility=if(panel) View.VISIBLE else View.GONE
         updatePlaybackText()
@@ -3293,6 +3300,7 @@ class MainActivity: Activity() {
         recommendationFeedPendingDirection=0
         cancelRecommendationFeedJobs()
         hideRecommendationInfo()
+        setPlayerChannelFocusable(true)
         showPanel()
         syncMediaSession()
     }
@@ -3700,7 +3708,7 @@ class MainActivity: Activity() {
                 // hands the stream over to the normal player.
                 if(recommendationFeedMode) return true
                 if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) {
-                    if(playerSidebar==null) {
+                    if(playerSidebar==null && !recommendationFeedMode) {
                         val restoreOverlay=panel || hud.visibility==View.VISIBLE
                         if(panel) hidePlaybackOverlay()
                         showPlayerSidebar(episodeBadge,PlayerSidebarTab.EPISODES,restoreOverlay)
@@ -3733,6 +3741,20 @@ class MainActivity: Activity() {
                     if(focusInside(playerChannelNav)) return super.dispatchKeyEvent(event)
                     return true
                 }
+                if(recommendationFeedMode && (key==KeyEvent.KEYCODE_DPAD_UP || key==KeyEvent.KEYCODE_DPAD_DOWN)) {
+                    if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) {
+                        clearPlayerChannelFocus()
+                        skipEpisode(if(key==KeyEvent.KEYCODE_DPAD_UP) -1 else 1)
+                    }
+                    return true
+                }
+                if(recommendationFeedMode && (key==KeyEvent.KEYCODE_DPAD_LEFT || key==KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                    if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) {
+                        clearPlayerChannelFocus()
+                        switchPreviewChannel(if(key==KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
+                    }
+                    return true
+                }
                 if(key in listOf(KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT,KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_DPAD_DOWN)) {
                     if(event.action==KeyEvent.ACTION_DOWN) when(key) {
                         KeyEvent.KEYCODE_DPAD_LEFT -> if(!focusInside(playerChannelNav)) {
@@ -3742,8 +3764,10 @@ class MainActivity: Activity() {
                             if(panel) hidePlaybackOverlay(); seek(1,event.repeatCount)
                         }
                         KeyEvent.KEYCODE_DPAD_UP -> if(event.repeatCount==0 && !focusInside(playerChannelNav)) {
-                            // Menu focus starts on the play button; UP must reach the channel bar.
-                            if(panel) return super.dispatchKeyEvent(event)
+                            // A recommendation confirmed into the normal player keeps the
+                            // feed's episode context: UP/DOWN switch episodes immediately.
+                            // Other players retain UP as the channel-bar entry.
+                            if(panel && tab!=TAB_RECOMMEND) return super.dispatchKeyEvent(event)
                             hidePlaybackOverlay(); skipEpisode(-1)
                         }
                         KeyEvent.KEYCODE_DPAD_DOWN -> if(event.repeatCount==0 && !focusInside(playerChannelNav)) {

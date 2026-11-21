@@ -868,7 +868,7 @@ class AccountController(
             AlertDialog.Builder(activity)
                 .setTitle("登录未完成")
                 .setMessage(safeError(failure))
-                .setPositiveButton("返回账号页") { _, _ -> show() }
+                .setPositiveButton("关闭", null)
                 .setNeutralButton("改用扫码") { _, _ -> qrLogin() }
         )
     }
