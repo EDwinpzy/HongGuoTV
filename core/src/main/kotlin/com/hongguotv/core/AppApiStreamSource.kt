@@ -20,7 +20,14 @@ internal class AppApiStreamSource(private val transport: AppApiTransport) : Stre
 
     private fun playbackContentType(type: ContentType) = if (type == ContentType.COMIC) 1004 else 1
 
-    override fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): StreamInfo {
+    override fun stream(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String>,
+        speculative: Boolean,
+        seriesId: String,
+    ): StreamInfo {
         // Background reads never touch this channel (upstream 0.1.26): it is a kept
         // probe for a retired endpoint - a speculative request would burn quota on
         // a path the foreground no longer relies on.
@@ -47,7 +54,7 @@ internal class AppApiStreamSource(private val transport: AppApiTransport) : Stre
                 val definition = (meta?.str("definition") ?: o.str("definition")).substringBefore('p').toIntOrNull() ?: 0
                 val height = (meta?.str("vheight") ?: o.str("vheight")).toIntOrNull() ?: 0
                 val width = (meta?.str("vwidth") ?: o.str("vwidth")).toIntOrNull() ?: 0
-                val quality = if (definition > 0) definition else if (width > 0 && (height == 0 || width < height)) width else height
+                val quality = playbackQualityValue(width, height, definition)
                 Triple(quality, codec, o)
             }.sortedByDescending { it.first }.toList()
         // ByteVC2 resources can expose playable audio but no video track in Android's MP4 extractor;

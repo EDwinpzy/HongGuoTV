@@ -11,6 +11,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.util.Locale
 
 /**
@@ -56,8 +57,14 @@ internal class MultiVideoModelStreamSource(
     override val name = "multi-video-model"
 
     /** Upstream pins this UA on the playback call (Android 9 SM-N9860 profile). */
-    private val playbackUa =
-        "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
+    private val playbackUa = VendorConstants.PLAYER_UA
+
+    /**
+     * The recovered video_tab gate accepts the v5 carrier
+     * (x-khronos/x-helios/x-medusa). The signer is process-wide so foreground
+     * playback and the short-lived prefetch repository keep one process identity.
+     */
+    private val tabSigner = Signer.sharedV5()
 
     /** Fallback_api hosts are pinned to the vendor's own domains (upstream keeps the same guard). */
     private val fallbackDomains = listOf("fqnovel.com", "snssdk.com")
@@ -84,7 +91,14 @@ internal class MultiVideoModelStreamSource(
     /** One resolved playback model: the video_model row plus its key_seed (fallback shape). */
     private data class Resolved(val model: JSONObject, val seed: ByteArray? = null)
 
-    override fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): StreamInfo {
+    override fun stream(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String>,
+        speculative: Boolean,
+        seriesId: String,
+    ): StreamInfo {
         val resolved = resolvePlaybackModel(id, metadataAhead, speculative)
         return select(resolved.model, maxQuality, resolved.seed)
     }
@@ -97,7 +111,14 @@ internal class MultiVideoModelStreamSource(
      * first tier the box can actually decode - ONE model request covers the whole
      * verified-downgrade walk, no quota is burned per tier switch.
      */
-    override fun ladder(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): List<StreamInfo> {
+    override fun ladder(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String>,
+        speculative: Boolean,
+        seriesId: String,
+    ): List<StreamInfo> {
         val resolved = resolvePlaybackModel(id, metadataAhead, speculative)
         val inline = ladderTiers(resolved.model, resolved.seed)
         if (inline.isNotEmpty()) return inline
@@ -217,6 +238,8 @@ internal class MultiVideoModelStreamSource(
         // Real signature (2026-11-11 event, upstream 269c6d8): the server validates
         // x-argus/x-ladon - AppApiTransport.sign() rebuilds them with the fqapp
         // Argus/Ladon ports over the final query and strips the placeholder chain.
+        // Anonymous registration is the verified playback identity. A website
+        // account cookie is not accepted by this App API gate.
         val identity = session.profile(http)
         val data = try {
             requestPlayback(payload.toString(), identity, trace)
@@ -315,6 +338,13 @@ internal class MultiVideoModelStreamSource(
      */
     private fun tabModel(id: String, speculative: Boolean = false, trace: PlaybackRequestTrace? = null): JSONObject? {
         val identity = session.profile(http)
+        val values = linkedMapOf<String, String>().apply {
+            putAll(identity.values)
+            for (key in listOf("version_code", "manifest_version_code", "update_version_code", "pv_player")) {
+                put(key, "73932")
+            }
+            put("version_name", "7.3.9.32")
+        }
         val extra = mapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
@@ -330,25 +360,31 @@ internal class MultiVideoModelStreamSource(
             val host = route.host
             var emptyBody = false
             val result = try {
-                // signPlayback builds base + "?" + encoded query itself (fresh _rticket,
-                // real-signature headers via AppApiTransport.sign); GET with no body.
-                val signed = transport.sign(
-                    "https://$host$TAB_PATH", identity.values + extra, null, playbackUa)
-                val request = okhttp3.Request.Builder()
-                    .url(signed.url)
-                    .apply {
-                        signed.headers.forEach { (k, v) -> header(k, v) }
-                        if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie)
-                        if (attempt > 0) header("Connection", "close")
-                    }
-                    .get()
-                    .build()
-                val text = RequestScope.execute(PlaybackRouteTransport.call(http,request)) { response ->
-                    if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
-                    val body = response.body?.string().orEmpty()
-                    trace?.response(PlaybackRequestTrace.Stage.GET, host, response.code, body.toByteArray(Charsets.UTF_8).size, response.protocol)
-                    body
+                // 2026-11-21 recovery: the official v5 carrier answers the tab GET.
+                // Keep the older Argus/Ladon form as a second probe on the same
+                // identity so a server rollback cannot immediately kill playback.
+                val query = values + extra
+                val v5 = try {
+                    tabTextV5(host, query, identity.cookie, attempt > 0)
+                } catch (interrupted: InterruptedIOException) {
+                    throw interrupted
+                } catch (_: IOException) {
+                    null
                 }
+                val text = v5 ?: try {
+                    tabTextArgus(host, query, identity.cookie, attempt > 0)
+                } catch (interrupted: InterruptedIOException) {
+                    throw interrupted
+                } catch (_: IOException) {
+                    null
+                } ?: ""
+                trace?.response(
+                    PlaybackRequestTrace.Stage.GET,
+                    host,
+                    200,
+                    text.toByteArray(Charsets.UTF_8).size,
+                    okhttp3.Protocol.HTTP_1_1,
+                )
                 if (text.isEmpty()) {
                     emptyBody = true
                     null
@@ -372,6 +408,63 @@ internal class MultiVideoModelStreamSource(
             if (emptyBody) routes.failed(route, emptyAnswer = true)
         }
         return null
+    }
+
+    /** The currently verified v5 tab request. Returns null for an empty body. */
+    private fun tabTextV5(
+        host: String,
+        values: Map<String, String>,
+        cookie: String,
+        closeConnection: Boolean,
+    ): String? {
+        val signed = tabSigner.signPlayback(
+            "https://$host$TAB_PATH",
+            values,
+            null,
+            System.currentTimeMillis(),
+        )
+        val request = Request.Builder()
+            .url(signed.url)
+            .apply {
+                signed.headers.forEach { (key, value) -> header(key, value) }
+                // The v5 carrier intentionally has no UA; set the official tab UA
+                // last so it is the value the server sees.
+                header("User-Agent", playbackUa)
+                header("Accept-Language", "zh-CN,zh;q=0.9")
+                if (cookie.isNotBlank()) header("Cookie", cookie)
+                if (closeConnection) header("Connection", "close")
+            }
+            .get()
+            .build()
+        return RequestScope.execute(PlaybackRouteTransport.call(http, request)) { response ->
+            if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
+            response.body?.string().orEmpty().takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /**
+     * Pre-v5 real Argus/Ladon tab request, retained for protocol rollback windows.
+     */
+    private fun tabTextArgus(
+        host: String,
+        values: Map<String, String>,
+        cookie: String,
+        closeConnection: Boolean,
+    ): String? {
+        val signed = transport.sign("https://$host$TAB_PATH", values, null, playbackUa)
+        val request = Request.Builder()
+            .url(signed.url)
+            .apply {
+                signed.headers.forEach { (key, value) -> header(key, value) }
+                if (cookie.isNotBlank()) header("Cookie", cookie)
+                if (closeConnection) header("Connection", "close")
+            }
+            .get()
+            .build()
+        return RequestScope.execute(PlaybackRouteTransport.call(http, request)) { response ->
+            if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
+            response.body?.string().orEmpty().takeIf { it.isNotEmpty() }
+        }
     }
 
     /** Parse the tab GET response into the video_model row; null on any shape mismatch (caller falls back). */
@@ -423,7 +516,7 @@ internal class MultiVideoModelStreamSource(
         }
         if (!shouldRotate) return
         // Network I/O outside the lock; success or failure, this period is done rotating.
-        val rotated = session.rotate(http)
+        val rotated = session.playbackRotate(http)
         synchronized(identityLock) {
             rotatedThisPeriod = true; rotatedAt = now; rotationFailed = !rotated
         }
@@ -445,7 +538,7 @@ internal class MultiVideoModelStreamSource(
      * answered 14596B / 14596B while the stale app identity kept returning 0B.
      */
     override fun refreshIdentity() {
-        val rotated = try { session.rotate(http) } catch (_: Exception) { false }
+        val rotated = try { session.playbackRotate(http) } catch (_: Exception) { false }
         if (rotated) routes.reset()
         synchronized(identityLock) {
             emptyRounds = 0
@@ -527,10 +620,14 @@ internal class MultiVideoModelStreamSource(
     ): Map<String, String> {
         val signed = transport.sign("https://$host$path", identity.values, body, playbackUa)
         val headers = signed.headers.toMutableMap()
-        if (identity.cookie.isNotBlank()) headers["Cookie"] = identity.cookie
+        val cookie = playbackCookie(identity.cookie)
+        if (cookie.isNotBlank()) headers["Cookie"] = cookie
         headers["Connection"] = "close"
         return headers
     }
+
+    /** The App API identity is the registered anonymous device, not a website session. */
+    private fun playbackCookie(deviceCookie: String): String = deviceCookie
 
     /** Three response shapes: data[vid].video_model, data.video_model, single-key entry. */
     private fun resolveModel(data: JSONObject, id: String): JSONObject {
@@ -590,17 +687,40 @@ internal class MultiVideoModelStreamSource(
                 val definition = (meta?.str("definition") ?: o.str("definition")).substringBefore('p').toIntOrNull() ?: 0
                 val height = (meta?.str("vheight") ?: o.str("vheight")).toIntOrNull() ?: 0
                 val width = (meta?.str("vwidth") ?: o.str("vwidth")).toIntOrNull() ?: 0
-                val quality = if (definition > 0) definition else if (width > 0 && (height == 0 || width < height)) width else height
+                val quality = playbackQualityValue(width, height, definition)
                 Triple(quality, codec, o)
-            }.sortedByDescending { it.first }.toList()
+            }.sortedWith(
+                compareByDescending<Triple<Int, String, JSONObject>> { it.first }
+                    .thenByDescending { tierBitrate(it.third) },
+            ).toList()
     }
 
     private fun isTvCompatible(codec: String) = codec == "h264" || codec == "avc1"
 
+    private fun tierBitrate(item: JSONObject): Long {
+        val meta = item.optJSONObject("video_meta")
+        return sequenceOf(
+            meta?.optLong("real_bitrate", 0) ?: 0,
+            meta?.optLong("bitrate", 0) ?: 0,
+            item.optLong("real_bitrate", 0),
+            item.optLong("bitrate", 0),
+        ).firstOrNull { it > 0 } ?: 0
+    }
+
+    private fun tierFps(item: JSONObject): Float {
+        val meta = item.optJSONObject("video_meta")
+        return sequenceOf(
+            meta?.optDouble("float_fps", 0.0) ?: 0.0,
+            meta?.optDouble("fps", 0.0) ?: 0.0,
+            item.optDouble("float_fps", 0.0),
+            item.optDouble("fps", 0.0),
+        ).firstOrNull { it > 0.0 }?.toFloat() ?: 0f
+    }
+
     /** One tier row -> a playable StreamInfo; null when the address cannot be resolved. */
     private fun tierInfo(row: Triple<Int, String, JSONObject>, seed: ByteArray?): StreamInfo? {
         val item = row.third
-        var url = cleanUrl(item.str("main_url"))
+        var url = cleanUrl(item.str("main_url").ifBlank { item.str("backup_url") })
         if (!url.startsWith("https://") && !url.startsWith("http://")) {
             // main_url may be base64, or key_seed-encrypted (spade layout a8 .. 01 00)
             val decoded = runCatching { decode64(url) }.getOrNull()
@@ -619,7 +739,17 @@ internal class MultiVideoModelStreamSource(
         val height = (meta?.str("vheight") ?: item.str("vheight")).toIntOrNull() ?: 0
         val width = (meta?.str("vwidth") ?: item.str("vwidth")).toIntOrNull() ?: 0
         val quality = if (row.first > 0) "${row.first}P" else "自动"
-        return StreamInfo(url, key, quality, row.second, width, height, row.first)
+        return StreamInfo(
+            url = url,
+            key = key,
+            quality = quality,
+            codec = row.second,
+            width = width,
+            height = height,
+            qualityValue = row.first,
+            bitrate = tierBitrate(item),
+            fps = tierFps(item),
+        )
     }
 
     /**

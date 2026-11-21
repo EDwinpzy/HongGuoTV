@@ -26,7 +26,14 @@ internal class PublicMp4StreamSource(
 ) : StreamSource {
     override val name = "public-mp4"
 
-    override fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): StreamInfo {
+    override fun stream(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String>,
+        speculative: Boolean,
+        seriesId: String,
+    ): StreamInfo {
         // Background reads never touch the website channel (upstream 0.1.26): a
         // speculative hit here would hand the player a 360p URL and short-circuit
         // the foreground's HD attempt on the App API path.
@@ -37,7 +44,7 @@ internal class PublicMp4StreamSource(
         // could not tell a 10s clip from a full episode).
         val probe = Request.Builder().url(url).header("User-Agent", webUa).header("Referer", "$site/")
             .header("Range", "bytes=0-131071").header("Accept-Encoding", "identity").build()
-        RequestScope.execute(http.newCall(probe)) { response ->
+        RequestScope.execute(PlaybackRouteTransport.call(http, probe)) { response ->
             if (response.code != 206 && response.code != 200) throw IOException("播放地址暂不可用（HTTP ${response.code}）")
             val head = response.body?.bytes() ?: ByteArray(0)
             val seconds = declaredSeconds(head)

@@ -6,7 +6,7 @@
 | --- | --- |
 | 设备 | JMGO S621 投影仪，Android 13 |
 | 分辨率 | 1920×1080 |
-| 应用版本 | 1.1.8（versionCode 10108） |
+| 应用版本 | 1.1.12（versionCode 10112） |
 | 应用包名 | `com.edwinpzy.hongguoduanju` |
 | 连接方式 | ADB TCP `192.168.1.47:5555` |
 | 输入方式 | ADB 注入 `DPAD_UP/DOWN/LEFT/RIGHT`、`DPAD_CENTER`、`MENU` 和 `BACK`；长按确认通过 `/dev/input/event9` 注入 1 秒持续按键；搜索词使用 ADB 文本注入；账号登录由手机红果 App 实际扫码确认 |
@@ -285,7 +285,57 @@
 | 界面无返回按钮 | PASS（代码/界面） | 详情页标题、收藏/历史合集页、推荐错误页和播放错误页均不再渲染返回按钮；手机号登录失败弹窗的恢复动作改为“关闭”。物理遥控器 BACK 键仍执行原有返回/退出逻辑 |
 | 编译与单测 | PASS | `:app:compileDebugKotlin :core:test` 通过 |
 | 稳定性 | PASS | 推荐进入、换片、确认播放和上下切集期间无 `FATAL EXCEPTION` / `ANR` |
+## 2026-11-21 v1.1.11 播放取流超时修复（Release 实机）
 
+版本升级为 `1.1.11 / 10111`。验证分支为 `codex/playback-timeout-diagnosis`，Release 包使用原签名覆盖安装到 S621。
+
+根因不是单纯的 CDN 超时：旧取流接口在服务端软拦截下返回 HTTP 200 + 0 字节；旧逻辑把它当作可重试超时，再叠加多条通道、身份轮换和媒体读取重试，最终形成数分钟等待。当前有效入口为：
+
+`GET https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/`
+
+本轮修复：
+
+- `video_tab` 使用 v5 carrier（`x-khronos` / `x-helios` / `x-medusa`），并把 v5 Signer 提升为进程级共享实例；主播放和预加载不再表现为两个进程身份。
+- 取流链改为 `video_tab` 优先，共享约 10 秒前台预算；空响应最多刷新一次匿名身份，普通超时不会被包装成确定性失败。
+- 匿名注册超时不再错误设置线程中断；一次注册超时不会再让后续请求被判定为取消。
+- 媒体分段支持短 `206` 续读、302 跟随、单请求 6 秒和单逻辑 Range 12 秒预算；总预算临近结束时，单请求超时同步缩短。
+- 首帧 watchdog 绑定当前播放器；迟到的旧播放器事件不会清掉新播放器的 watchdog，暂停恢复后会重新计时。
+- 网站完整 H264 兜底失败时，不丢弃已签名且设备可解码的 HEVC 档位；避免把可播放剧集误报为 `source-unavailable`。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 冷启动“接着看” | PASS | 第 351 集 `1080P/bytevc1`，首帧 `elapsedMs=3794`；随后自动续播第 352 集首帧 `elapsedMs=1000` |
+| 目标第 350 集 | PASS | `1080P/bytevc1/1922x1080`，首帧 `elapsedMs=1329`，画面与字幕正常；后续自动推进到第 352、353 集，首帧分别为 `185ms`、`178ms` |
+| HEVC-only + 网页 403 | PASS | 第 366 集 v5 仅返回 `1080P/bytevc1/1920x1080`，网站完整片源返回 403；应用继续播放 HEVC，首帧 `elapsedMs=1332`，不再显示 `source-unavailable` |
+| 暂停恢复 | PASS | ADB 注入暂停 3 秒再恢复，画面继续出画，无 watchdog 误报 |
+| 稳定性日志 | PASS | 第 350–353 集连续播放及第 366 集复测后，日志无 `FATAL EXCEPTION`、`ANR`、`source-unavailable`、`NoPlayable`、watchdog 误报或播放失败 |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test` 共 269 项，0 失败、0 错误；`:app:assembleRelease`、`:app:bundleRelease`、`:app:lintVitalRelease` 通过 |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `0C4679593E46A74A20E319A1FD6BCDF2559A51AA26A86AC7FF0121142D3962AC`；AAB SHA-256 `A3444324569A4FC5F6B9E49D250D4A1774FC576C03258EA56E63D87AEC437554` |
+
+限制：S621 输入均为 ADB 注入，未使用物理遥控器；未完整播放全部 1000 集，也未覆盖数小时连续播放、所有网络环境和全部 TV 型号。分辨率/选集弹窗的“定位”按钮在 S621 上可能被挤出可视区域，这是非播放 UI 问题，本轮未修。
+
+## 2026-11-21 v1.1.12 画质标注与真实码率修正（Release 实机）
+
+版本升级为 `1.1.12 / 10112`。验证分支为 `codex/playback-timeout-diagnosis`，Release 包使用原签名覆盖安装到 S621。
+
+本轮不是简单地把 1080P 标签改成更高数值，而是修正了“标签与真实片源不一致”的根因：
+
+- 服务端存在 `definition=1080p`、但编码尺寸只有 `854×480`、码率 `323084 bps` 的片源。旧逻辑优先信任 `definition`，因此 HUD 会显示 1080P，实际解码却只有 480P。
+- 即使是真实的 `1922×1080` 片源，当前剧集部分集数也只有约 `0.38–0.59 Mbps`，明显低于常见高码率 1080P，因此主观上会显得偏软。
+- 新逻辑优先用 `vwidth` / `vheight` 计算实际清晰度，只有尺寸缺失时才回退到服务端 `definition`；同时解析 `real_bitrate` / `bitrate` 和帧率，同一分辨率优先选择高码率源。
+- 播放条和播放侧栏现在显示真实解码尺寸与片源码率，例如 `1080P · 1922×1080 · 片源码率 508 kbps`；设置项改为“分辨率上限”，避免把分辨率标签误当成最终锐度。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 真实 1080P 播放 | PASS | 第 391 集选流 `1080P/bytevc1/1922x1080/508371bps`，首帧 `elapsedMs=1673`；ADB 截图中的播放条显示 `1080P · 1922×1080 · 片源码率 508 kbps`，播放侧栏同步显示相同参数 |
+| 片源无 1080P 档 | PASS | 第 395 集服务端只返回 `480P/bytevc1/854x480/337670bps` 及更低档位；最终 1.1.12 播放条如实显示 `480P · 854×480 · 片源码率 338 kbps`，不再用设置上限冒充实际片源 |
+| 服务端标签错标 | PASS | 实测同一剧集存在 `definition=1080p`、`854×480`、`323084bps` 的片源；新增单测确认新逻辑将其归类为 `480P / qualityValue=480`，不再显示为 1080P |
+| 同分辨率高码率优先 | PASS | 新增单测用两条 1080P 片源验证：`2000000bps` 排在 `800000bps` 前，且兼容缺少码率字段的旧片源 |
+| 预加载切集 | PASS | 第 391→392 集使用已预加载片源，首帧 `elapsedMs=224`；最终 1.1.12 包第 395→396 集首帧 `elapsedMs=297`，均无黑屏、超时或解码失败 |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test` 共 273 项，0 失败、0 错误、9 跳过；`:app:assembleRelease`、`:app:bundleRelease`、`:app:lintVitalRelease` 通过 |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `810D52435977309F9A06CC4D29375623659495820A314EEFC6D23B83AAA23F56`；AAB SHA-256 `BBEBEF489BA980B49CC8FDEB55546D8B5C6F6164DD664BC1C734A04C9023C49E` |
+
+限制：服务端无法提供更高码率片源时，App 不会用锐化滤镜伪造“更清晰”；同一个 1080P 标签仍可能只有约 0.5 Mbps。连续探测期间匿名播放身份曾短暂返回空响应，等待约 60 秒后同一集恢复并真实出画，这是服务端额度/空响应限制，不是本轮播放超时回归。S621 输入均为 ADB 注入，未使用物理遥控器。
 ## 未验证或有限制
 
 | 项目 | 状态 | 说明 |

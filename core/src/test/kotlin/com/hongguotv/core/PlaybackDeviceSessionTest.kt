@@ -1,6 +1,7 @@
 package com.hongguotv.core
 
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
@@ -78,5 +79,18 @@ class PlaybackDeviceSessionTest {
         val profile = session.profile(http)
         assertEquals(1, calls.get()) // rotate's registration is reused, profile never re-registers
         assertEquals("333", profile.values["device_id"])
+    }
+
+    @Test
+    fun registrationTimeoutDoesNotInterruptThePlaybackWorker() {
+        try {
+            val session = PlaybackDeviceSession { throw SocketTimeoutException("test timeout") }
+            assertFalse(session.rotate(http))
+            // A stalled registration must not poison every later request in this
+            // worker: RequestScope treats an interrupted thread as cancelled.
+            assertFalse(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
     }
 }

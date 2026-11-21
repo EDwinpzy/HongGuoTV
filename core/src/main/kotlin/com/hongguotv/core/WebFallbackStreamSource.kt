@@ -30,18 +30,15 @@ internal class WebFallbackStreamSource(
         type: ContentType,
         metadataAhead: List<String>,
         speculative: Boolean,
+        seriesId: String,
     ): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         val payload = JSONObject().put("item_id", id).toString()
-        val request = Request.Builder()
-            .url("$site/api/video/protected/fallback-play-info")
-            .header("User-Agent", webUa)
-            .header("Referer", "$site/")
-            .header("Accept", "application/json")
-            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        val request = requestBuilder("/api/video/protected/fallback-play-info")
+            .post(payload.toRequestBody(JSON))
             .build()
-        return RequestScope.execute(http.newCall(request)) { response ->
-            if (!response.isSuccessful) throw IOException("网页播放地址请求失败（HTTP ${response.code}）")
+        return RequestScope.execute(PlaybackRouteTransport.call(http, request)) { response ->
+            if (!response.isSuccessful) throw unavailable(response.code, "网页完整片源")
             val body = response.body ?: throw IOException("网页播放地址响应为空")
             if (body.contentLength() > 64 * 1024) throw IOException("网页播放地址响应过大")
             val source = body.source()
@@ -66,6 +63,22 @@ internal class WebFallbackStreamSource(
         }
     }
 
+    private fun unavailable(httpCode: Int, source: String): IOException =
+        if (httpCode == 403 || httpCode == 404) {
+            PlaybackSourceUnavailableException("$source 未向当前账号提供该集（HTTP $httpCode）")
+        } else {
+            IOException("$source 请求失败（HTTP $httpCode）")
+        }
+
+    private fun requestBuilder(path: String): Request.Builder =
+        Request.Builder()
+            .url("$site$path")
+            .header("User-Agent", webUa)
+            .header("Referer", "$site/")
+            .header("Origin", site)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+
     /** Reject the known ten-second preview clip before ExoPlayer can mistake it for an episode. */
     private fun verifyFullMp4(url: String) {
         val probe = Request.Builder()
@@ -75,9 +88,9 @@ internal class WebFallbackStreamSource(
             .header("Range", "bytes=0-131071")
             .header("Accept-Encoding", "identity")
             .build()
-        RequestScope.execute(http.newCall(probe)) { response ->
+        RequestScope.execute(PlaybackRouteTransport.call(http, probe)) { response ->
             if (response.code != 200 && response.code != 206) {
-                throw IOException("网页完整片源暂不可用（HTTP ${response.code}）")
+                throw unavailable(response.code, "网页完整片源")
             }
             val body = response.body ?: throw IOException("网页完整片源响应为空")
             val source = body.source()
@@ -105,5 +118,9 @@ internal class WebFallbackStreamSource(
         }
         if (scale <= 0 || duration <= 0) return null
         return duration.toDouble() / scale.toDouble()
+    }
+
+    private companion object {
+        val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }

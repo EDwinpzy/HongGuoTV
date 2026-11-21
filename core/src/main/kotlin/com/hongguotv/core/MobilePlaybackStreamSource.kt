@@ -40,6 +40,7 @@ internal class MobilePlaybackStreamSource(
         type: ContentType,
         metadataAhead: List<String>,
         speculative: Boolean,
+        seriesId: String,
     ): StreamInfo {
         val tiers = ladder(id, maxQuality, type, metadataAhead, speculative)
         val best = tiers.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
@@ -57,6 +58,7 @@ internal class MobilePlaybackStreamSource(
         type: ContentType,
         metadataAhead: List<String>,
         speculative: Boolean,
+        seriesId: String,
     ): List<StreamInfo> {
         require(id.matches(Regex("[0-9]{1,30}")))
         val profile = if (speculative) session.existing()
@@ -70,7 +72,7 @@ internal class MobilePlaybackStreamSource(
     }
 
     override fun refreshIdentity() {
-        runCatching { session.rotate(http) }
+        runCatching { session.playbackRotate(http) }
     }
 
     private fun request(
@@ -195,12 +197,7 @@ internal class MobilePlaybackStreamSource(
         val height = (meta?.str("vheight").orEmpty().ifEmpty {
             entry.str("vheight")
         }).toIntOrNull() ?: 0
-        val quality = when {
-            definition > 0 -> definition
-            width > 0 && (height == 0 || width < height) -> width
-            height > 0 -> height
-            else -> 0
-        }
+        val quality = playbackQualityValue(width, height, definition)
         val rawUrl = listOf("main_url", "play_url", "backup_url_1")
             .map { entry.str(it) }
             .firstOrNull { it.isNotEmpty() }
@@ -213,6 +210,18 @@ internal class MobilePlaybackStreamSource(
         if (encryption != null && key == null &&
             encryption.opt("encrypt") !in listOf(false, 0, "0", "false")
         ) return@runCatching null
+        val bitrate = sequenceOf(
+            meta?.optLong("real_bitrate", 0) ?: 0,
+            meta?.optLong("bitrate", 0) ?: 0,
+            entry.optLong("real_bitrate", 0),
+            entry.optLong("bitrate", 0),
+        ).firstOrNull { it > 0 } ?: 0
+        val fps = sequenceOf(
+            meta?.optDouble("float_fps", 0.0) ?: 0.0,
+            meta?.optDouble("fps", 0.0) ?: 0.0,
+            entry.optDouble("float_fps", 0.0),
+            entry.optDouble("fps", 0.0),
+        ).firstOrNull { it > 0.0 }?.toFloat() ?: 0f
         StreamInfo(
             url = url,
             key = key,
@@ -221,6 +230,8 @@ internal class MobilePlaybackStreamSource(
             width = width,
             height = height,
             qualityValue = quality,
+            bitrate = bitrate,
+            fps = fps,
         )
     }.getOrNull()
 
@@ -262,7 +273,7 @@ internal class MobilePlaybackStreamSource(
     private companion object {
         const val ENDPOINT =
             "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
-        val sharedSigner = Signer(mobileV5 = true)
+        val sharedSigner = Signer.sharedV5()
         val betterTier: Comparator<StreamInfo> =
             compareBy<StreamInfo> {
                 if (it.codec.lowercase(Locale.ROOT) in setOf("h264", "avc", "avc1", "avc3")) 1 else 0

@@ -233,7 +233,7 @@ class PlayerSidebar(
             },
         )
         copy.addView(
-            label("清晰度上限 ${state.quality}P · 倍速 ${PlaybackSpeed.label(state.speed)}", 11.5f, accentSoft).apply {
+            label("分辨率上限 ${state.quality}P · 倍速 ${PlaybackSpeed.label(state.speed)}", 11.5f, accentSoft).apply {
                 setPadding(0, dp(6), 0, 0)
             },
         )
@@ -443,7 +443,7 @@ class PlayerSidebar(
         body.addView(label("画面与播放", 11f, accentSoft).apply { setPadding(0, 0, 0, dp(7)) })
         val qualityChoices = settingRow(
             body,
-            "清晰度上限",
+            "分辨率上限",
             PlaybackQuality.options.map { "${it}P" },
             PlaybackQuality.options.indexOf(state.quality).coerceAtLeast(0),
         ) {

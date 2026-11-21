@@ -339,6 +339,7 @@ class MainActivity: Activity() {
     private var player: ExoPlayer?=null
     private var video: RemoteVideo?=null
     private var playbackReady=false
+    private var firstFrameWatchdog: Runnable?=null
     private var playbackSpinner: View?=null
     private var pausedForLifecycle=false
     private lateinit var hud: LinearLayout
@@ -592,7 +593,7 @@ class MainActivity: Activity() {
             try {
                 val result=scope.run(action)
                 main.post {
-                    val discard={ if(result is RemoteVideo) result.close(); Unit }
+                    val discard={ (result as? java.io.Closeable)?.close(); Unit }
                     if(isDestroyed || generation!=ticket) discard()
                     else if(foreground) done(result)
                     else { deferredWork?.discard?.invoke(); deferredWork=DeferredUi({ done(result) },discard) }
@@ -1035,7 +1036,8 @@ class MainActivity: Activity() {
                         metadataAhead=data.episodes.drop(target.index+1).take(2),
                         speculative=true,
                         supportsTrack={ it==null || CodecCapabilities.supports(it) },
-                        learnedFailure={ CodecCapabilities.learnedFailure(it) })
+                        learnedFailure={ CodecCapabilities.learnedFailure(it) },
+                        seriesId=data.series.id)
                         ?: throw java.io.IOException("推荐预加载没有可用清晰度")
                 }
                 // openStream() already prepared the header and first 256KB. Warming
@@ -1901,7 +1903,7 @@ class MainActivity: Activity() {
         heading(playback,"播放偏好")
         heading(device,"片单与设备")
         lateinit var qualityButton: TextView
-        qualityButton=setting(playback,"清晰度上限  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
+        qualityButton=setting(playback,"分辨率上限  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
         lateinit var defaultSpeed: TextView
         defaultSpeed=setting(playback,"默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(defaultSpeed,false) }
         lateinit var frame: TextView
@@ -2557,6 +2559,8 @@ class MainActivity: Activity() {
         val forceBest=forceBestOnNextPlay
         forceBestOnNextPlay=false
         val data=detail ?: return
+        firstFrameWatchdog?.let { main.removeCallbacks(it) }
+        firstFrameWatchdog=null
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
         library.setWatched(data.series.id,false)
@@ -2688,7 +2692,8 @@ class MainActivity: Activity() {
                     metadataAhead=ahead,
                     supportsTrack={ it==null || CodecCapabilities.supports(it) },
                     learnedFailure={ CodecCapabilities.learnedFailure(it) },
-                    retryLearned=forceBest)
+                    retryLearned=forceBest,
+                    seriesId=data.series.id)
                 ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         }, { opened ->
             val remote=opened.video
@@ -2758,6 +2763,25 @@ class MainActivity: Activity() {
                 analyticsListener=analytics
                 p.addAnalyticsListener(analytics)
             }
+            val watchdog=Runnable {
+                if(player!==p || generation!=ticket || p.currentMediaItem?.mediaId!=requestedId) return@Runnable
+                // This runnable is the current watchdog; clear it even when playback
+                // is paused, so resuming can arm a fresh 12s window.
+                firstFrameWatchdog=null
+                if(firstFrame && playbackReady && !playError && p.playbackState==Player.STATE_READY &&
+                    p.isPlaying && p.currentPosition>startPosition+500) {
+                    android.util.Log.w(
+                        "HongguoTV",
+                        "First video frame watchdog fired position=${p.currentPosition} "+
+                            "state=${p.playbackState}",
+                    )
+                    playerFailure(PlaybackException(
+                        "视频画面长时间未出现",
+                        null,
+                        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+                    ))
+                }
+            }
             val listener=object: Player.Listener {
                 private fun active()=player===p && generation==ticket && p.currentMediaItem?.mediaId==requestedId
                 private var bufferingSince=0L
@@ -2778,6 +2802,10 @@ class MainActivity: Activity() {
                         }
                         playbackReady=true
                         playbackSpinner?.visibility=View.GONE
+                        if(firstFrame && firstFrameWatchdog==null) {
+                            firstFrameWatchdog=watchdog
+                            main.postDelayed(watchdog, 12_000L)
+                        }
                         if(firstReady) { firstReady=false; readySince=android.os.SystemClock.elapsedRealtime(); android.util.Log.i("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-playbackStarted}") }
                         if(hud.visibility==View.VISIBLE) updatePlaybackText()
                     }
@@ -2818,7 +2846,10 @@ class MainActivity: Activity() {
                     }
                 }
                 override fun onRenderedFirstFrame() {
-                    if(active() && firstFrame) {
+                    if(!active()) return
+                    firstFrameWatchdog?.let { main.removeCallbacks(it) }
+                    firstFrameWatchdog=null
+                    if(firstFrame) {
                         firstFrame=false
                         playbackSpinner?.visibility=View.GONE
                         revealPlaybackVideo()
@@ -2826,7 +2857,15 @@ class MainActivity: Activity() {
                         if(!panel) hidePlaybackOverlay()
                     }
                 }
-                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(hud.visibility==View.VISIBLE) updatePlaybackText(); syncMediaSession() } }
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    if(!active()) return
+                    if(playing && firstFrame && firstFrameWatchdog==null) {
+                        firstFrameWatchdog=watchdog
+                        main.postDelayed(watchdog, 12_000L)
+                    }
+                    if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                    syncMediaSession()
+                }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) syncMediaSession() }
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
@@ -2963,7 +3002,8 @@ class MainActivity: Activity() {
                             metadataAhead=data.episodes.drop(episodePos+1).take(2),
                             speculative=true,
                             supportsTrack={ it==null || CodecCapabilities.supports(it) },
-                            learnedFailure={ CodecCapabilities.learnedFailure(it) })
+                            learnedFailure={ CodecCapabilities.learnedFailure(it) },
+                            seriesId=data.series.id)
                             ?: throw java.io.IOException("预加载没有可用清晰度")
                     }
                     // Header + first block are already cached by openStream(). Keep
@@ -3019,12 +3059,19 @@ class MainActivity: Activity() {
         retryPending=true; main.postDelayed(retryRunnable,delay)
     }
     private fun playerFailure(problem: Throwable) {
+        firstFrameWatchdog?.let { main.removeCallbacks(it) }
+        firstFrameWatchdog=null
         revealPlaybackVideo()
         retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=requestedAutoplay && !sleepStopped
         saveProgress(); cancelRecovery(); cancelPrefetch()
         // Deterministic failure (no decodable tier on this box): retrying and
         // downgrading only reproduce it, so no auto-recovery budget / lower button.
         val noPlayableQuality=generateSequence(problem){ it.cause }.take(8).any { it is NoPlayableQualityException }
+        // The scheduler already exhausted the signed sources and one identity refresh.
+        // Repeating that whole round three more times only makes "playback timeout"
+        // worse, so this category requires a manual retry.
+        val sourceUnavailable=generateSequence(problem){ it.cause }.take(8)
+            .any { it is PlaybackSourceUnavailableException }
         // MediaCodecList over-reporting: the box claimed it could decode this codec/size
         // but the runtime failed. Learn the exact geometry (codec|width|height) and
         // retry one tier lower automatically instead of showing the error panel -
@@ -3052,13 +3099,20 @@ class MainActivity: Activity() {
         playbackText.visibility=View.VISIBLE
         hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
-        val retryable=if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT else problem is java.io.IOException
-        playbackText.text=if(decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "播放失败，可重试或切换清晰度。"
+        val retryable=!sourceUnavailable && (
+            if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT
+            else problem is java.io.IOException)
+        playbackText.text=when {
+            sourceUnavailable -> "片源接口暂时不可用，已停止自动重试。请稍后手动重试或切换剧集。"
+            decoding -> "电视无法解码当前视频，可尝试更低清晰度。"
+            else -> "播放失败，可重试或切换清晰度。"
+        }
         // Structured diagnostic line (upstream 2026-11-01 design): model / Android /
         // app version / recovery count / error category. A screenshot of this line
         // pinpoints the failure stage - the generic message above folds everything.
         val category=when {
             problem is PlaybackException -> "exo=${problem.errorCodeName}"
+            sourceUnavailable -> "source-unavailable"
             problem.message?.contains("空响应")==true -> "empty${problem.message?.substringAfter("（")?.substringBefore("）")?.let { " $it" } ?: ""}"
             problem.message?.contains("注册失败")==true -> "register"
             else -> problem.javaClass.simpleName
@@ -3189,6 +3243,7 @@ class MainActivity: Activity() {
         )
         transportPlay?.contentDescription=if(playing) "暂停" else "播放"
         if(screen!="player" || playError) return
+        playbackText.visibility=View.VISIBLE
         if(sleepStopped) { playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"; return }
         if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
         val p=player ?: return
@@ -3454,10 +3509,10 @@ class MainActivity: Activity() {
     }
     private fun showQualityPicker(anchor: TextView,inPlayer: Boolean) {
         val options=PlaybackQuality.options
-        val dialog=TvDialogUi.choice(this,"清晰度上限（设备不支持时自动降级）",options.map { "${it}P" },options.indexOf(library.maxQuality),onChoice={ index ->
+        val dialog=TvDialogUi.choice(this,"分辨率上限（清晰度还取决于片源码率）",options.map { "${it}P" },options.indexOf(library.maxQuality),onChoice={ index ->
                 val target=options[index]; val changed=library.maxQuality!=target
                 library.maxQuality=target
-                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "清晰度上限  ·  ")+"${target}P"
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "画质 " else "分辨率上限  ·  ")+"${target}P"
                 if(changed) {
                     forceBestOnNextPlay=true
                     if(inPlayer) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
@@ -3467,9 +3522,7 @@ class MainActivity: Activity() {
         dialog.show()
     }
     private fun actualQualityText(): String {
-        val name=quality.ifBlank { currentTier?.quality.orEmpty() }.ifBlank { "自动" }
-        val size=currentTrack?.let { "${it.width}×${it.height}" }
-        return listOf(name,size).filterNotNull().filter { it.isNotBlank() }.joinToString(" · ")
+        return actualQualityLabel(quality,currentTrack,currentTier)
     }
     private fun showPlayerSidebar(
         anchor: View?,
@@ -3571,6 +3624,8 @@ class MainActivity: Activity() {
     }
     private fun releasePlayer() {
         cancelRecovery(); cancelPrefetch(); mediaSession.deactivate(); tvTools.close()
+        firstFrameWatchdog?.let { main.removeCallbacks(it) }
+        firstFrameWatchdog=null
         hideRecommendationInfo()
         clearPlaybackDisplayMode()
         val wasForeground=foreground; foreground=false
