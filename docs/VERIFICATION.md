@@ -499,3 +499,20 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；282 项测试、0 失败、0 错误、10 跳过 |
 
 限制：S621 输入均为 ADB 注入，不是物理遥控器；实机证据来自版本名 `1.1.16` 的同一修复构建，`1.1.17` 只完成覆盖安装，用户要求发布前不再实机复测。本轮只验证第 6 集及紧随切集，未遍历全部仅返回 `bytevc2` 的剧集，也未验证其他 TV 型号的 HEVC 能力。
+
+## 2026-11-22 v1.1.18 弹幕后续分页游标保留（Release 实机）
+
+发布版本为 `1.1.18 / 10118`。验证分支为 `codex/danmaku-continuous-v118`，基于 `v1.1.17 / 671f0a3` 的最新发布线修复，保留此前的播放器主线程状态快照、请求重试和自动连播修复。
+
+根因：`DanmakuFetchPlan.next()` 虽把服务端 `common_list_info.cursor` 放入 `Advance.Request`，但实际工作线程只消费 `waitMs`；下一轮调用 `request()` 时仍固定得到空 cursor。后续分页因此不能继承服务端列表游标，可能重复首页或提前结束，去重后表现为“开头有弹幕，后续没有”。修复后在拉取状态机内持久化 cursor，`request()` 每轮返回当前时间窗和服务端游标；新增断言直接覆盖下一轮的 `request()`，不只检查未被工作线程消费的 `Advance.Request`。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 后续请求游标回归 | PASS | `DanmakuFetchPlanTest` 断言连续两页之后的 `plan.request()` 分别保留 `page-1` 和 `page-2`；现有 120 秒续页、时间提示停滞和明确终页测试继续通过 |
+| S621 后续分页 | PASS | Release 实机《夜晚的答案》自动连播至第 3 集，日志显示 `0 / 30 / 60 / 90 / 120 / 150 / 180s` 窗口依次获取，后续响应 `cursor=true more=true`；180 秒窗口取得 6 条新弹幕并继续到 210 秒 |
+| S621 可见真实弹幕 | PASS | 同版本《夜晚的答案》连续自然播放约 1 分钟、3 分钟及后续多次采样可见“这俩太有意思了”“这不火上浇油吗”“有原则是对的”“人穷志不穷”等真实滚动弹幕；未循环重放旧评论或生成虚假弹幕 |
+| 完整干净门禁 | PASS | `clean :core:test :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease :app:lintVitalRelease --no-build-cache` 通过；282 项测试、0 失败、0 错误、10 跳过（显式联网探针） |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `C29689DFD97E03BE36CFDAB0FC372BC8DA255A807018FE2F39964A032A7B0D79`；AAB SHA-256 `6154B283A2B1DCA2EE2314051F125DD1FE069598AB5ED56A3A591A084B1677FF` |
+| 覆盖安装 | PASS | S621 覆盖安装 Release `1.1.18 / 10118` 成功，应用数据与登录态保留；发布后使用同一 APK 复核安装和播放 |
+
+限制：S621 输入均为 ADB 注入，不是物理遥控器；验证是自然连续播放和多次采样，不是每一帧都有弹幕。稀疏窗口可能没有真实评论，单张无弹幕截图不能证明拉取失败；数小时播放、全部剧集及其他 TV 型号仍未验证。

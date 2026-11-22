@@ -10,7 +10,9 @@ class DanmakuFetchPlanTest {
         assertEquals(DanmakuFetchPlan.Request(0, ""), plan.request())
         val next = plan.next(DanmakuPage(emptyList(), 30_000, cursor = "page-1", hasMore = true), 0)
         assertEquals(DanmakuFetchPlan.Request(30_000, "page-1"), next!!.request)
+        assertEquals(DanmakuFetchPlan.Request(30_000, "page-1"), plan.request())
         assertEquals(DanmakuFetchPlan.Request(60_000, "page-2"), plan.next(DanmakuPage(emptyList(), 60_000, "page-2", true), 0)!!.request)
+        assertEquals(DanmakuFetchPlan.Request(60_000, "page-2"), plan.request())
     }
 
     @Test fun `time hint at duration is not terminal while server has more`() {
