@@ -331,7 +331,7 @@ class MainActivity: Activity() {
     private fun invalidateCatalogCache() { catalogCacheKey()?.let { catalogCache.remove(it) }; homeFetchedAt=0 }
     private var detail: Detail?=null
     private var episodeIndex=0
-    private var group=0
+    private var episodeSection=0
     private var synopsisExpanded=false
     /** Related-seasons row for the detail page: loaded async after the detail itself. */
     private var relatedRow: LinearLayout?=null
@@ -2335,7 +2335,8 @@ class MainActivity: Activity() {
             detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
             val progress=library.progress(series.id)
             val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
-            episodeIndex=target.index; group=episodeIndex/20
+            episodeIndex=target.index
+            episodeSection=episodeIndex/20
             if(resume) playEpisode(target.index,target.position,autoplay=detailAutoplay) else showDetail(false)
             fetchRelatedSeries(result.series)
         }, { problem -> error(body,problem) { openDetail(series,resume,detailAutoplay) } })
@@ -2392,24 +2393,20 @@ class MainActivity: Activity() {
         }
         content.addView(hero,lp(-1,-2).apply { bottomMargin=dp(10) })
         content.addView(text("选集",20f).apply { typeface=TvStyle.titleTypeface(); setPadding(dp(2),0,0,dp(5)) })
-        val groupRow=row(); groupRow.setPadding(0,0,0,dp(4))
-        val maxGroup=data.episodes.lastIndex/20; group=group.coerceIn(0,maxGroup)
-        val previous=addButton(groupRow,"‹ 上一组") { if(group>0) { group--; showDetail(true) } }.apply {
-            isEnabled=group>0; isFocusable=group>0; alpha=if(group>0) 1f else .4f
-            textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
+        val sections=data.episodes.indices.toList().chunked(20)
+        episodeSection=episodeSection.coerceIn(0,sections.lastIndex)
+        val sectionRow=row()
+        val sectionButtons=sections.mapIndexed { index,section ->
+            val tab=compactButton("第 ${section.first()+1}—${section.last()+1} 集",index==episodeSection) {
+                if(index!=episodeSection) { episodeSection=index; showDetail(true) }
+            }
+            sectionRow.addView(tab,lp().apply { width=LinearLayout.LayoutParams.WRAP_CONTENT; if(index<sections.lastIndex) rightMargin=dp(6) })
+            tab
         }
-        groupRow.addView(text("第 ${group*20+1}—${minOf((group+1)*20,data.episodes.size)} 集",12.5f,muted).apply { gravity=Gravity.CENTER },lp(dp(128),dp(TvStyle.CONTROL_COMPACT)))
-        addButton(groupRow,"下一组 ›") { if(group<maxGroup) { group++; showDetail(true) } }.apply {
-            isEnabled=group<maxGroup; isFocusable=group<maxGroup; alpha=if(group<maxGroup) 1f else .4f
-            textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-        }
-        lateinit var jump: TextView
-        jump=addButton(groupRow,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; showDetail(true) } }.apply {
-            textSize=13f; setPadding(dp(12),dp(5),dp(12),dp(5)); minHeight=dp(TvStyle.CONTROL_COMPACT)
-        }
-        content.addView(groupRow)
+        content.addView(sectionRow)
+        val section=sections[episodeSection]
         val episodes=mutableListOf<View>()
-        (group*20 until minOf((group+1)*20,data.episodes.size)).toList().chunked(10).forEach { numbers ->
+        section.chunked(10).forEach { numbers ->
             val line=row()
             numbers.forEach { index ->
                 val item=button("${index+1}",index==episodeIndex) { playEpisode(index,if(progress?.episodeId==data.episodes[index] && !progress.completed) progress.position else 0) }.apply {
@@ -2421,9 +2418,16 @@ class MainActivity: Activity() {
             content.addView(line,lp(-1,dp(TvStyle.CONTROL_PRIMARY)).apply { bottomMargin=dp(1) })
         }
         episodes.forEachIndexed { i,v -> v.nextFocusLeftId=if(i%10==0) v.id else episodes[i-1].id; v.nextFocusRightId=if(i%10==9 || i==episodes.lastIndex) v.id else episodes[i+1].id; if(i>=10) v.nextFocusUpId=episodes[i-10].id; v.nextFocusDownId=if(i+10<episodes.size) episodes[i+10].id else v.id }
-        // Group/jump rebuilds reuse the cached related-seasons row (no second search).
+        sectionButtons.forEachIndexed { i,tab ->
+            tab.nextFocusLeftId=sectionButtons[if(i==0) i else i-1].id
+            tab.nextFocusRightId=sectionButtons[if(i==sectionButtons.lastIndex) i else i+1].id
+            tab.nextFocusDownId=episodes[0].id
+        }
+        episodes.take(10).forEach { item -> item.nextFocusUpId=sectionButtons[episodeSection].id }
+        // Synopsis rebuilds reuse the cached related-seasons row (no second search).
         relatedSeasons?.takeIf { it.isNotEmpty() }?.let { appendRelatedRow(it) }
-        if(focusEpisode) episodes.getOrNull((episodeIndex-group*20).coerceIn(0,episodes.lastIndex))?.requestFocus() else play.requestFocus()
+        val localIndex=if(episodeIndex in section) episodeIndex-section.first() else 0
+        if(focusEpisode) episodes.getOrNull(localIndex)?.requestFocus() else play.requestFocus()
     }
     /**
      * Related-seasons row at the bottom of the detail page. Loaded asynchronously so a
@@ -2455,7 +2459,7 @@ class MainActivity: Activity() {
         }
     }
     private var relatedJob: java.util.concurrent.Future<*>?=null
-    /** Cached related seasons: showDetail() rebuilds the page on group/jump/synopsis
+    /** Cached related seasons: showDetail() rebuilds the page on synopsis
      *  changes, and the row must survive those rebuilds without a second search. */
     private var relatedSeasons: List<Series>?=null
     private fun appendRelatedRow(seasons: List<Series>) {
@@ -2581,7 +2585,7 @@ class MainActivity: Activity() {
         if(!recovering) recovery.reset()
         autoRecovery=false; readySince=0; startPosition=position.coerceAtLeast(0); requestedAutoplay=autoplay
         if(autoplay) sleepStopped=false
-        screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
+        screen="player"; episodeIndex=selectedIndex; episodeSection=selectedIndex/20
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
         // A fresh episode resets the downgrade budget; an auto-downgrade retry keeps it.
         if(!autoDowngrade) autoDowngrades=0
@@ -3186,13 +3190,8 @@ class MainActivity: Activity() {
         if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
         val p=player ?: return
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
-        val parts=mutableListOf("${formatTime(position)} / ${formatTime(duration)}")
-        if(quality.isNotBlank() || currentTrack!=null) parts+=actualQualityText()
-        if(p.playbackParameters.speed!=1f) parts+=PlaybackSpeed.label(p.playbackParameters.speed)
-        if(p.playbackState==Player.STATE_BUFFERING) parts+="缓冲中"
-        if(p.playbackState==Player.STATE_ENDED) parts+="本集已结束"
-        if(sleepTimer.active) parts+="定时 ${sleepTimer.label()}"
-        playbackText.text=parts.joinToString("  ·  ")
+        playbackText.text=""
+        playbackText.visibility=View.GONE
         playbackPosition.text=formatTime(position)
         playbackDuration.text="-"+formatTime((duration-position).coerceAtLeast(0))
         progressBar.progress=if(duration>0) (position*1000/duration).toInt().coerceIn(0,1000) else 0
