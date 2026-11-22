@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import android.util.Log
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.ContentType
+import com.hongguotv.core.PlaybackSourceUnavailableException
 import com.hongguotv.core.RemoteVideo
 import com.hongguotv.core.StreamInfo
 import com.hongguotv.core.VideoTracks
@@ -12,6 +13,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketException
+import java.util.Locale
 
 /**
  * One opened playback tier (upstream OpenedStream, 2026-11-14 port). Carries the whole
@@ -35,15 +37,37 @@ internal class OpenedStream(
 internal class NoPlayableQualityException :
     IOException("本集所有档位均超出电视解码能力，可尝试其他集数")
 
-/** Better tier = higher quality, h264/avc over other codecs (upstream StreamLadder.better). */
+/** Better tier = higher resolution, then source bitrate, then h264/avc compatibility. */
 private val betterTier =
     compareBy<StreamInfo> { it.qualityValue }
+        .thenBy { it.bitrate }
         .thenBy { if (it.codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")) 1 else 0 }
 private val bestFirstTier =
     compareByDescending<StreamInfo> { it.qualityValue }
+        .thenByDescending { it.bitrate }
         .thenByDescending { if (it.codec.lowercase() in setOf("h264", "avc", "avc1", "avc3")) 1 else 0 }
 
 internal data class PlaybackAttempt(val tier: StreamInfo,val forced: Boolean)
+
+internal fun formatSourceBitrate(bitsPerSecond: Long): String =
+    if (bitsPerSecond >= 1_000_000) {
+        String.format(Locale.ROOT, "%.2f Mbps", bitsPerSecond / 1_000_000.0)
+    } else {
+        "${(bitsPerSecond + 500) / 1_000} kbps"
+    }
+
+internal fun actualQualityLabel(
+    name: String,
+    track: VideoTracks.Track?,
+    tier: StreamInfo?,
+): String {
+    val label = name.ifBlank { tier?.quality.orEmpty() }.ifBlank { "自动" }
+    val width = track?.width?.takeIf { it > 0 } ?: tier?.width?.takeIf { it > 0 }
+    val height = track?.height?.takeIf { it > 0 } ?: tier?.height?.takeIf { it > 0 }
+    val size = if (width != null && height != null) "${width}×${height}" else null
+    val bitrate = tier?.bitrate?.takeIf { it > 0 }?.let { "片源码率 ${formatSourceBitrate(it)}" }
+    return listOfNotNull(label, size, bitrate).joinToString(" · ")
+}
 
 internal fun primaryPlaybackAttempts(
     ladder: List<StreamInfo>,
@@ -100,18 +124,28 @@ internal fun openStream(
     supportsTrack: (VideoTracks.Track?) -> Boolean,
     learnedFailure: (StreamInfo) -> Boolean = { false },
     retryLearned: Boolean = false,
+    seriesId: String = "",
 ): OpenedStream? {
-    val ladder = repository.playbackTiers(id, maxQuality, type, metadataAhead, speculative)
+    val ladder = repository.playbackTiers(
+        id,
+        maxQuality,
+        type,
+        metadataAhead,
+        speculative,
+        seriesId,
+    )
     Log.i(
         "HongguoTV",
-        "Playback ladder: " + ladder.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" },
+        "Playback ladder: " + ladder.joinToString {
+            "${it.quality}/${it.codec}/${it.width}x${it.height}/${it.bitrate}bps"
+        },
     )
     val primary = ladder.filterNot { it.isFallback }
     val fallback = ladder.filter { it.isFallback }
     Log.i(
         "HongguoTV",
         "Playback candidates: " + ladder.joinToString {
-            "${it.quality}/${it.codec}/${it.width}x${it.height}=${supportsTier(it)}"
+            "${it.quality}/${it.codec}/${it.width}x${it.height}/${it.bitrate}bps=${supportsTier(it)}"
         },
     )
     val primaryOrder = primaryPlaybackAttempts(ladder,maxQuality,supportsTier,learnedFailure,retryLearned)
@@ -123,11 +157,10 @@ internal fun openStream(
         },
     )
     var primaryError: Exception? = null
-    var attemptedPrimary=false
+    var primaryDeterministic: PlaybackSourceUnavailableException? = null
     for ((tier,forced) in primaryOrder) {
         val video = RemoteVideo(http, tier)
         try {
-            attemptedPrimary=true
             Log.i(
                 "HongguoTV",
                 "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}" +
@@ -147,6 +180,7 @@ internal fun openStream(
                 Log.i(
                     "HongguoTV",
                     "Playback selected: ${tier.quality}/${tier.codec}/${track?.width}x${track?.height}" +
+                        "/${tier.bitrate}bps" +
                         if (forced) " (forced best effort)" else "",
                 )
                 return OpenedStream(video, tier, ladder, track)
@@ -159,13 +193,16 @@ internal fun openStream(
         } catch (error: Exception) {
             video.close()
             if(cancelledPlayback(error)) throw error
-            primaryError = error
+            if (error is PlaybackSourceUnavailableException) primaryDeterministic = error
+            else primaryError = error
             Log.w("HongguoTV", "Playback tier failed: ${tier.quality}/${tier.codec}: ${error.message}")
         }
     }
     // The website fallback is a continuation source, never proof that the signed
     // primary ladder failed capability checks. Only reach it after every primary
     // candidate was attempted.
+    var fallbackError: Exception? = null
+    var fallbackDeterministic: PlaybackSourceUnavailableException? = null
     for (tier in fallback.sortedWith(bestFirstTier)) {
         val video = RemoteVideo(http, tier)
         try {
@@ -180,11 +217,17 @@ internal fun openStream(
         } catch (error: Exception) {
             video.close()
             if(cancelledPlayback(error)) throw error
-            if(primaryError==null && primary.isEmpty()) primaryError=error
+            if (error is PlaybackSourceUnavailableException) fallbackDeterministic = error
+            else fallbackError = error
             Log.w("HongguoTV", "Playback fallback failed: ${tier.quality}: ${error.message}")
         }
     }
-    if (ladder.isNotEmpty()) throwNoOpenedStream(ladder, primaryError.takeIf { attemptedPrimary || primary.isEmpty() })
+    if (ladder.isNotEmpty()) {
+        throwNoOpenedStream(
+            ladder,
+            primaryDeterministic ?: fallbackDeterministic ?: primaryError ?: fallbackError,
+        )
+    }
     return null
 }
 
@@ -199,8 +242,10 @@ internal fun throwNoOpenedStream(ladder: List<StreamInfo>, lastError: Exception?
 
 internal fun cancelledPlayback(error: Throwable): Boolean =
     Thread.currentThread().isInterrupted || generateSequence(error) { it.cause }.take(8).any {
-        (it is InterruptedIOException && it !is java.net.SocketTimeoutException) ||
-            (it is SocketException && it.message?.contains("cancel",ignoreCase=true)==true)
+        (it is InterruptedIOException && it !is java.net.SocketTimeoutException &&
+            it.message?.contains("timeout", ignoreCase=true)!=true) ||
+            (it is SocketException && it.message?.contains("cancel",ignoreCase=true)==true) ||
+            it.message?.contains("请求已取消")==true
     }
 
 /** Lowest ladder tier strictly below the attempted quality; null = no dead-end button. */

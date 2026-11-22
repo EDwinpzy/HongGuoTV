@@ -50,12 +50,23 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
  * One playback address. [codec]/[width]/[height] are the API metadata of the chosen
  * rendition (upstream Rendition fields, 2026-11-14 port) so the app layer can verify
  * them against the device's real decoder capabilities; [qualityValue] is the numeric
- * tier (0 = unknown/auto) for ladder-style comparisons. Defaults keep the legacy
- * 3-arg constructors of the fallback channels working unchanged.
+ * tier (0 = unknown/auto) for ladder-style comparisons. [bitrate]/[fps] expose the
+ * server's source metadata so the TV can distinguish a high-bitrate 1080P rendition
+ * from a heavily compressed one. Defaults keep the legacy constructors working.
  */
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String,
                       val codec: String = "", val width: Int = 0, val height: Int = 0,
-                      val qualityValue: Int = 0, val isFallback: Boolean = false)
+                      val qualityValue: Int = 0, val isFallback: Boolean = false,
+                      val bitrate: Long = 0, val fps: Float = 0f)
+
+internal fun playbackQualityValue(width: Int, height: Int, definition: Int = 0): Int =
+    when {
+        width > 0 && (height == 0 || width < height) -> width
+        height > 0 -> height
+        definition > 0 -> definition
+        else -> 0
+    }
+
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
 /**
@@ -68,13 +79,19 @@ class SearchSessionExpiredException: IOException("搜索结果已过期，请从
  *  - search / ranking / suggestions: website pages and JSON endpoints
  * The old drpys multi_video_model chain (x-argus/x-ladon/x-helios/x-medusa) is retired.
  */
-class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
+class ContentRepository(
+    val http: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15,TimeUnit.SECONDS)
+        .readTimeout(30,TimeUnit.SECONDS)
+        .callTimeout(45,TimeUnit.SECONDS)
+        .build(),
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
+) {
     private val site = "https://hongguoduanju.com"
     private val webUa = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1"
     /** Server-registered device identity: the 2026-10-27 crackdown rejects unregistered
      *  device_ids on the App API (playback + landpage feed) with HTTP 200 + empty body. */
-    private val playbackSession = PlaybackDeviceSession.shared
-
     // ---------- shared HTTP helpers ----------
 
     private fun text(url: String, headers: Map<String,String> = emptyMap()): String {
@@ -120,7 +137,9 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     private val webFallback = WebFallbackStreamSource(http, webUa, site)
 
     /** Playback fallback chain: v5 App API -> legacy App API -> full-episode web -> 10s public MP4. */
-    private val streams = StreamScheduler(StreamSource.default(appApi, http, webUa, site, webFallback))
+    private val streams = StreamScheduler(
+        StreamSource.default(appApi, http, webUa, site, webFallback, playbackSession)
+    )
 
     private fun appRequest(path: String, payload: String?): JSONObject =
         appApi.request(path, payload, signed = true, identity = playbackSession.profile(http))
@@ -130,9 +149,14 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     /** Danmaku list client (30s window pagination; dedup/merge handled by the caller). */
     private val danmakuClient = DanmakuRepository(http, appApi)
 
-    /** One danmaku window: [startOffsetMs] follows the previous page's nextCursorMs. */
-    fun danmakuPage(videoId: String, seriesId: String, startOffsetMs: Long, durationMs: Long): DanmakuPage =
-        danmakuClient.page(videoId, seriesId, startOffsetMs, durationMs)
+    /** One danmaku page, including its independent time and list cursors. */
+    fun danmakuPage(
+        videoId: String,
+        seriesId: String,
+        startOffsetMs: Long,
+        durationMs: Long,
+        cursor: String = "",
+    ): DanmakuPage = danmakuClient.page(videoId, seriesId, startOffsetMs, durationMs, cursor)
 
     // ---------- catalog (App landpage) ----------
 
@@ -567,13 +591,20 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
 
     // ---------- stream: channel scheduler (App API first, public MP4 fallback) ----------
 
-    fun stream(id: String, maxQuality: Int = 1080, type: ContentType = ContentType.SHORT, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamInfo {
+    fun stream(
+        id: String,
+        maxQuality: Int = 1080,
+        type: ContentType = ContentType.SHORT,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        seriesId: String = "",
+    ): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
         // Channels live in StreamSource implementations; when an endpoint changes,
         // fix the affected channel (or add a new one to StreamSource.default) - this
         // method and the app never change.
-        return streams.stream(id, maxQuality, type, metadataAhead, speculative)
+        return streams.stream(id, maxQuality, type, metadataAhead, speculative, seriesId)
     }
 
     /**
@@ -586,23 +617,40 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      * renditions, so metadata alone is not enough - a failed tier is learned and
      * the next lower one is tried without re-requesting the model.
      */
-    fun playbackTiers(id: String, maxQuality: Int = 1080, type: ContentType = ContentType.SHORT, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): List<StreamInfo> {
+    fun playbackTiers(
+        id: String,
+        maxQuality: Int = 1080,
+        type: ContentType = ContentType.SHORT,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        seriesId: String = "",
+    ): List<StreamInfo> {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
-        val tiers = streams.ladder(id, maxQuality, type, metadataAhead, speculative)
-        logger.info("ladder $id: " + tiers.joinToString { "${it.quality}/${it.codec}/${it.width}x${it.height}" })
-        if (tiers.any { it.isAvc() }) return tiers
-        // v5 currently returns a single 1080x1920 ByteVC1 rendition for many
-        // episodes. S621 advertises HEVC support but fails after roughly two
-        // minutes, so keep a complete H264 episode in the same ladder as the
-        // last-resort tier. Quality wins first; H264 only breaks a quality tie.
-        return runCatching {
-            val fallback = webFallback.stream(id, maxQuality, type, metadataAhead, speculative)
-            logger.info("web fallback $id: ${fallback.quality}/${fallback.codec}")
-            tiers + fallback
-        }.onFailure {
-            logger.warning("web fallback failed for $id: $it")
-        }.getOrDefault(tiers)
+        return PlaybackRequestBudget.run(if (speculative) 6_000 else 10_000) {
+            val tiers = streams.ladder(id, maxQuality, type, metadataAhead, speculative, seriesId)
+            logger.info("ladder $id: " + tiers.joinToString {
+                "${it.quality}/${it.codec}/${it.width}x${it.height}/${it.bitrate}bps"
+            })
+            if (tiers.isEmpty() || tiers.any { it.isAvc() } || speculative) return@run tiers
+            // v5 can still return a HEVC-only ladder. Keep one verified full-episode
+            // H264 rendition as the last resort, but stay inside the same request
+            // deadline so a failing website edge cannot add another 45s of waiting.
+            runCatching {
+                val fallback = webFallback.stream(
+                    id,
+                    maxQuality,
+                    type,
+                    metadataAhead,
+                    speculative,
+                    seriesId,
+                )
+                logger.info("web fallback $id: ${fallback.quality}/${fallback.codec}")
+                tiers + fallback
+            }.onFailure {
+                logger.warning("web fallback failed for $id: $it")
+            }.getOrDefault(tiers)
+        }
     }
 
     private fun StreamInfo.isAvc() =

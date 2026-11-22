@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.net.SocketTimeoutException
 
 /**
  * 2026-11-14 regression: the capability-first ladder must retry sporadic empty
@@ -21,9 +22,23 @@ class StreamSchedulerLadderTest {
     ) : StreamSource {
         var calls = 0
         var refreshes = 0
-        override fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): StreamInfo =
+        override fun stream(
+            id: String,
+            maxQuality: Int,
+            type: ContentType,
+            metadataAhead: List<String>,
+            speculative: Boolean,
+            seriesId: String,
+        ): StreamInfo =
             throw UnsupportedOperationException()
-        override fun ladder(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String>, speculative: Boolean): List<StreamInfo> {
+        override fun ladder(
+            id: String,
+            maxQuality: Int,
+            type: ContentType,
+            metadataAhead: List<String>,
+            speculative: Boolean,
+            seriesId: String,
+        ): List<StreamInfo> {
             calls++
             return script.removeAt(0)()
         }
@@ -37,26 +52,26 @@ class StreamSchedulerLadderTest {
     fun retriesTransientEmptyAnswersOnFreshIdentities() {
         val signed = ScriptedSource("app-api", mutableListOf(
             { throw AppApiEmptyResponseException() },
-            { throw EmptyPlaybackResponseException() },
             { listOf(hd) },
         ))
         val website = ScriptedSource("public-mp4", mutableListOf({ listOf(preview) }))
         val tiers = StreamScheduler(listOf(signed, website)).ladder("123", 1080, ContentType.SHORT)
         assertEquals(1, tiers.size)
         assertEquals("720P", tiers[0].quality)
-        assertEquals(3, signed.calls)
-        assertEquals(2, signed.refreshes) // each retry gets a re-registered device
+        assertEquals(2, signed.calls)
+        assertEquals(1, signed.refreshes) // one retry gets a re-registered device
         assertEquals(0, website.calls)
     }
 
     @Test
     fun neverServesWebsitePreviewWhenSignedChannelStaysEmpty() {
-        val signed = ScriptedSource("app-api", MutableList(5) { { throw AppApiEmptyResponseException() } })
+        val signed = ScriptedSource("app-api", MutableList(2) { { throw AppApiEmptyResponseException() } })
         val website = ScriptedSource("public-mp4", mutableListOf({ listOf(preview) }))
         val error = runCatching { StreamScheduler(listOf(signed, website)).ladder("123", 1080, ContentType.SHORT) }.exceptionOrNull()
         assertTrue("expected IOException, got $error", error is IOException)
-        assertEquals(5, signed.calls)
-        assertEquals(4, signed.refreshes)
+        assertTrue(error is PlaybackSourceUnavailableException)
+        assertEquals(2, signed.calls)
+        assertEquals(1, signed.refreshes)
         assertEquals(0, website.calls) // the 10s clip must never reach the player
     }
 
@@ -112,5 +127,19 @@ class StreamSchedulerLadderTest {
         assertEquals(1, backup.calls)
         assertEquals(0, primary.refreshes)
         assertEquals(0, backup.refreshes)
+    }
+
+    @Test
+    fun emptyThenTimeoutStaysRetryableInsteadOfBecomingDeterministic() {
+        val primary = ScriptedSource("multi-video-model", mutableListOf(
+            { throw AppApiEmptyResponseException() },
+            { throw SocketTimeoutException("network stalled") },
+        ))
+        val error = runCatching {
+            StreamScheduler(listOf(primary)).ladder("123", 1080, ContentType.SHORT)
+        }.exceptionOrNull()
+        assertTrue("expected timeout, got $error", error is SocketTimeoutException)
+        assertEquals(2, primary.calls)
+        assertEquals(1, primary.refreshes)
     }
 }

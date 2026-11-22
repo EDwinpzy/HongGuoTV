@@ -7,20 +7,26 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 /** One danmaku comment at its video-relative position. */
 data class DanmakuItem(val id: String, val timeMs: Long, val text: String)
 
-/** One window of the danmaku list (30s cursor pagination upstream). */
-data class DanmakuPage(val items: List<DanmakuItem>, val nextCursorMs: Long)
+/** One server page, with separate video-time and list continuation state. */
+data class DanmakuPage(
+    val items: List<DanmakuItem>,
+    val nextCursorMs: Long,
+    val cursor: String = "",
+    val hasMore: Boolean = false,
+)
 
 /**
  * Danmaku list client: POST /novel/commentapi/comment/list/{videoID}/v1/
  * with the full comment signature chain (DanmakuSigner).
  *
- * Pagination: the response carries data.extra.next_query_danmaku_list_time
- * (a millisecond cursor into the video timeline); the next call passes it as
- * business_param.start_offset_time to fetch the following window.
+ * Pagination uses both data.extra.next_query_danmaku_list_time and
+ * data.common_list_info.cursor. Neither the time hint nor the list cursor
+ * alone is sufficient to fetch every page.
  */
 internal class DanmakuRepository(
     private val http: OkHttpClient,
@@ -293,15 +299,21 @@ internal class DanmakuRepository(
     }
     /**
      * Fetch one window. [startOffsetMs] starts at 0 and follows
-     * [DanmakuPage.nextCursorMs]; [durationMs] is the episode duration
+     * [DanmakuPage.nextCursorMs] with the server list [cursor]; [durationMs] is the episode duration
      * (business_param.playlet_item_duration).
      */
-    fun page(videoId: String, seriesId: String, startOffsetMs: Long, durationMs: Long): DanmakuPage {
+    fun page(
+        videoId: String,
+        seriesId: String,
+        startOffsetMs: Long,
+        durationMs: Long,
+        cursor: String = "",
+    ): DanmakuPage {
         val payload = JSONObject()
             .put("comment_source", 601).put("server_channel", 1000)
             .put("group_id", videoId).put("group_type", 30)
             .put("comment_type", 20).put("sort", 1).put("count", 90)
-            .put("cursor", "").put("aid", 8662).put("compliance_status", 0)
+            .put("cursor", cursor).put("aid", 8662).put("compliance_status", 0)
             .put("business_param", JSONObject()
                 .put("book_id", seriesId)
                 .put("start_offset_time", startOffsetMs)
@@ -319,7 +331,11 @@ internal class DanmakuRepository(
             .header("X-SS-STUB", "")
         for ((k, v) in signed.headers) builder.header(k, v)
         builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-        return RequestScope.execute(http.newCall(builder.build())) { response ->
+        // The shared client has a 45s call timeout, but a stalled TLS/route handshake
+        // can sit in execute() longer than the player's whole episode. Give danmaku
+        // its own short deadline so the retry loop actually observes the failure.
+        val call=http.newCall(builder.build()).apply { timeout().timeout(8, TimeUnit.SECONDS) }
+        return RequestScope.execute(call) { response ->
             if (!response.isSuccessful) throw IOException("弹幕接口请求失败（HTTP ${response.code}）")
             val text = response.body?.string() ?: throw IOException("弹幕接口响应为空")
             if (text.isEmpty()) throw IOException("弹幕接口返回空数据")
@@ -344,8 +360,15 @@ internal class DanmakuRepository(
                 else textContent
                 DanmakuItem(id, timeMs, mapped)
             }
-            val next = data.optJSONObject("data")?.optJSONObject("extra")?.optLong("next_query_danmaku_list_time", -1L) ?: -1L
-            DanmakuPage(items, next)
+            val responseData = data.optJSONObject("data")
+            val next = responseData?.optJSONObject("extra")?.optLong("next_query_danmaku_list_time", -1L) ?: -1L
+            val listInfo = responseData?.optJSONObject("common_list_info")
+            DanmakuPage(
+                items,
+                next,
+                listInfo?.str("cursor") ?: "",
+                listInfo?.optBoolean("has_more", false) ?: false,
+            )
         }
     }
 }

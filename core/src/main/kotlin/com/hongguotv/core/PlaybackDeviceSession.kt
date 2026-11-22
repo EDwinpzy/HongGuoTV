@@ -4,6 +4,7 @@ package com.hongguotv.core
 
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.util.UUID
 import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
@@ -72,8 +73,18 @@ class PlaybackDeviceSession(
         val device =
             try {
                 register(http) ?: return false
+            } catch (error: SocketTimeoutException) {
+                // A stalled registration is a normal retryable failure. Marking the
+                // thread interrupted here made every later request in this playback
+                // worker look cancelled, turning one timeout into a dead playback.
+                return false
             } catch (error: InterruptedIOException) {
-                Thread.currentThread().interrupt()
+                if (Thread.currentThread().isInterrupted ||
+                    error.message?.contains("取消") == true ||
+                    error.message?.contains("cancel", ignoreCase = true) == true
+                ) {
+                    Thread.currentThread().interrupt()
+                }
                 return false
             } catch (error: IOException) {
                 return false
@@ -83,6 +94,9 @@ class PlaybackDeviceSession(
         ready = toProfile(device)
         return true
     }
+
+    /** Playback uses the anonymous registered identity, so it is always rotatable. */
+    internal fun playbackRotate(http: OkHttpClient): Boolean = rotate(http)
 
     private fun registerDevice(http: OkHttpClient): DeviceRegister.Registered {
         val device =
