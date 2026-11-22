@@ -123,7 +123,7 @@ class MultiVideoModelRotationTest {
     }
 
     @Test
-    fun bytevc2OnlyFallbackRequestsOneCompatibleModelAndPreservesOtherParameters() {
+    fun bytevc2OnlyFallbackRequestsHevcCompatModelAndPreservesOtherParameters() {
         val fallbackRequests = java.util.concurrent.CopyOnWriteArrayList<Request>()
         val http = OkHttpClient.Builder()
             .addInterceptor { chain ->
@@ -134,8 +134,8 @@ class MultiVideoModelRotationTest {
                     MultiVideoModelStreamSource.PATH -> respond(request, fallbackOnlyModel())
                     else -> {
                         fallbackRequests.add(request)
-                        // Original fallback: all bytevc2. Compat request: returns h264.
-                        if (request.url.queryParameter("force_codec") == "h264") respond(request, compatModel())
+                        // Original fallback: all bytevc2. codec_type=3 exposes HEVC.
+                        if (request.url.queryParameter("codec_type") == "3") respond(request, compatModel())
                         else respond(request, bytevc2Model())
                     }
                 }
@@ -150,8 +150,41 @@ class MultiVideoModelRotationTest {
         assertEquals(2, fallbackRequests.size) // original + exactly one compat request
         // The compat request keeps the original URL's other parameters (token here).
         assertEquals("fixture", fallbackRequests.last().url.queryParameter("token"))
-        assertEquals("0", fallbackRequests.last().url.queryParameter("codec_type"))
-        assertEquals("h264", fallbackRequests.last().url.queryParameter("force_codec"))
+        assertEquals("3", fallbackRequests.last().url.queryParameter("codec_type"))
+        assertFalse(fallbackRequests.last().url.queryParameterNames.contains("force_codec"))
+    }
+
+    @Test
+    fun bytevc2OnlyFallbackTriesH265WhenByteVc1StillReturnsByteVc2() {
+        val fallbackRequests = java.util.concurrent.CopyOnWriteArrayList<Request>()
+        val http = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                when (request.url.encodedPath) {
+                    "/service/2/device_register/" -> respond(request, """{"device_id":"333","install_id":"444"}""", setCookie = true)
+                    MultiVideoModelStreamSource.TAB_PATH -> respond(request, "")
+                    MultiVideoModelStreamSource.PATH -> respond(request, fallbackOnlyModel())
+                    else -> {
+                        fallbackRequests.add(request)
+                        when (request.url.queryParameter("codec_type")) {
+                            "3" -> respond(request, bytevc2Model())
+                            "1" -> respond(request, h265CompatModel())
+                            else -> respond(request, bytevc2Model())
+                        }
+                    }
+                }
+            }
+            .callTimeout(5, TimeUnit.SECONDS)
+            .build()
+        val source = source(http, PlaybackDeviceSession())
+
+        val info = source.stream("123", 1080, ContentType.SHORT)
+        assertEquals("https://example.test/h265-video", info.url)
+        assertEquals("720P", info.quality)
+        assertEquals(
+            listOf("4", "3", "1"),
+            fallbackRequests.map { it.url.queryParameter("codec_type") },
+        )
     }
 
     @Test
@@ -192,7 +225,10 @@ class MultiVideoModelRotationTest {
     private fun fallbackOnlyModel() = JSONObject()
         .put("code", 0)
         .put("data", JSONObject().put("123", JSONObject()
-            .put("video_model", JSONObject().put("fallback_api", "https://api.fqnovel.com/fallback?token=fixture"))))
+            .put("video_model", JSONObject().put(
+                "fallback_api",
+                "https://api.fqnovel.com/fallback?token=fixture&codec_type=4",
+            ))))
         .toString()
 
     /** Fallback body: every offered variant is bytevc2 (TV-unplayable). */
@@ -204,13 +240,22 @@ class MultiVideoModelRotationTest {
                 .put("video_meta", JSONObject().put("definition", "720p").put("codec_type", "bytevc2"))))))
         .toString()
 
-    /** Compat body: the h264 variant the compat request returns. */
+    /** Compat body: the ByteVC1/HEVC variants exposed by codec_type=3. */
     private fun compatModel() = JSONObject()
         .put("video_info", JSONObject().put("data", JSONObject().put("video_list", JSONObject()
             .put("0", JSONObject()
                 .put("main_url", "https://example.test/compat-video")
-                .put("codec_type", "h264")
-                .put("video_meta", JSONObject().put("definition", "720p").put("codec_type", "h264"))))))
+                .put("codec_type", "bytevc1")
+                .put("video_meta", JSONObject().put("definition", "720p").put("codec_type", "bytevc1"))))))
+        .toString()
+
+    /** codec_type=1 body: the standard H.265 variants. */
+    private fun h265CompatModel() = JSONObject()
+        .put("video_info", JSONObject().put("data", JSONObject().put("video_list", JSONObject()
+            .put("0", JSONObject()
+                .put("main_url", "https://example.test/h265-video")
+                .put("codec_type", "h265")
+                .put("video_meta", JSONObject().put("definition", "720p").put("codec_type", "h265"))))))
         .toString()
 
     /** Fallback body: h265 + bytevc2 mix - compat request must NOT trigger. */

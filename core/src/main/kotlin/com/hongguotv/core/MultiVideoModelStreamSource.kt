@@ -122,12 +122,11 @@ internal class MultiVideoModelStreamSource(
         val resolved = resolvePlaybackModel(id, metadataAhead, speculative)
         val inline = ladderTiers(resolved.model, resolved.seed)
         if (inline.isNotEmpty()) return inline
-        // All inline rows were bytevc2/bvc2 (VVC - no TV decoder). The official
-        // player has a compat path (upstream streamLadder / 265472f): read
-        // fallback_api, and when that model ALSO offers only bytevc2, re-request
-        // the same URL with codec_type=0&force_codec=h264. This is exactly how
-        // upstream plays these episodes at 540x960 HEVC ("960P") while we used
-        // to return an empty ladder and fall through to the 10s preview clip.
+        // All inline rows were bytevc2/bvc2 (VVC - no TV decoder). Read
+        // fallback_api, and when that model ALSO offers only bytevc2, request
+        // the same URL with codec_type=3 (ByteVC1/HEVC). The server ignores
+        // force_codec=h264 and answers that request with bytevc2 again; its
+        // codec_type selector is what actually exposes the playable HEVC set.
         val compat = resolveFallbackTiers(resolved.model) ?: return emptyList()
         return ladderTiers(compat.model, compat.seed)
     }
@@ -143,7 +142,7 @@ internal class MultiVideoModelStreamSource(
         }
     }
 
-    /** Legacy fallback endpoint + all-bytevc2 compat request; null when unusable. */
+    /** Legacy fallback endpoint + all-bytevc2 HEVC compat request; null when unusable. */
     private fun resolveFallbackTiers(model: JSONObject): Resolved? {
         val fallback = fallbackUrl(model)
         if (!fallback.startsWith("https://")) return null
@@ -297,9 +296,10 @@ internal class MultiVideoModelStreamSource(
     }
 
     /**
-     * All-bytevc2 fallback compat request (upstream 265472f): returns the compat
-     * model's data object when every offered variant is bytevc2/bvc2, else null
-     * (keep the original). At most one extra request, no retry loop.
+     * All-bytevc2 fallback compat request: the fallback URL advertises
+     * codec_type=4 (ByteVC2/H.266). Re-request it with codec_type=3 (ByteVC1)
+     * and then codec_type=1 (H.265), returning the first model that contains a
+     * non-bytevc2 tier. At most two extra requests; no retry loop.
      */
     private fun bytevc2CompatModel(inner: JSONObject, fallback: String): JSONObject? {
         val videoList = inner.optJSONObject("video_list") ?: return null
@@ -309,13 +309,21 @@ internal class MultiVideoModelStreamSource(
                 it.str("main_url").isNotBlank() &&
                     it.str("codec_type").lowercase(Locale.ROOT) in setOf("bytevc2", "bvc2")
             }) return null
-        val compatible = fallback.toHttpUrl().newBuilder()
-            .setQueryParameter("codec_type", "0")
-            .setQueryParameter("force_codec", "h264")
-            .build().toString()
-        val outer = fallbackJson(compatible)
-        return outer.optJSONObject("video_info")?.optJSONObject("data")
-            ?: outer.optJSONObject("data")
+        for (codecType in listOf("3", "1")) {
+            val compatible = fallback.toHttpUrl().newBuilder()
+                .setQueryParameter("codec_type", codecType)
+                .removeAllQueryParameters("force_codec")
+                .build().toString()
+            val outer = fallbackJson(compatible)
+            val model = outer.optJSONObject("video_info")?.optJSONObject("data")
+                ?: outer.optJSONObject("data")
+                ?: continue
+            val playable = runCatching {
+                tierRows(model).any { it.second !in setOf("bytevc2", "bvc2") }
+            }.getOrDefault(false)
+            if (playable) return model
+        }
+        return null
     }
 
     /**
