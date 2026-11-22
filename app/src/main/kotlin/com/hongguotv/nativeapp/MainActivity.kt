@@ -3190,8 +3190,12 @@ class MainActivity: Activity() {
         if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
         val p=player ?: return
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
-        playbackText.text=""
-        playbackText.visibility=View.GONE
+        val status=mutableListOf<String>()
+        if(p.playbackState==Player.STATE_BUFFERING) status+="缓冲中"
+        if(p.playbackState==Player.STATE_ENDED) status+="本集已结束"
+        if(sleepTimer.active) status+="定时 ${sleepTimer.label()}"
+        playbackText.text=status.joinToString("  ·  ")
+        playbackText.visibility=if(status.isEmpty()) View.GONE else View.VISIBLE
         playbackPosition.text=formatTime(position)
         playbackDuration.text="-"+formatTime((duration-position).coerceAtLeast(0))
         progressBar.progress=if(duration>0) (position*1000/duration).toInt().coerceIn(0,1000) else 0
