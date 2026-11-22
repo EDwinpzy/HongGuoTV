@@ -190,7 +190,8 @@ internal class AppApiTransport(
         for ((k,v) in headers) builder.header(k,v)
         if (body != null) builder.post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
         val request = builder.build()
-        val call = if (playbackRoute) PlaybackRouteTransport.call(http,request) else http.newCall(request)
+        val budgeted = playbackRoute || PlaybackRequestBudget.remainingMillis() != null
+        val call = if (budgeted) PlaybackRouteTransport.call(http,request) else http.newCall(request)
         return RequestScope.execute(call) { response ->
             if (!response.isSuccessful) throw IOException("App 接口请求失败（HTTP ${response.code}）")
             val text = response.body?.string() ?: throw IOException("App 接口响应为空")

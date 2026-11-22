@@ -2,6 +2,7 @@
 package com.hongguotv.core
 
 import java.io.IOException
+import java.io.InterruptedIOException
 
 /**
  * One playback address channel. The playback chain has been reworked four times
@@ -29,7 +30,14 @@ interface StreamSource {
      * never rotate the identity, never count empty rounds - a speculative miss
      * must not burn the foreground's failure budget or quota.
      */
-    fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamInfo
+    fun stream(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        seriesId: String = "",
+    ): StreamInfo
 
     /**
      * Every playable tier of one episode (upstream streamLadder, 2026-11-14 capability
@@ -38,8 +46,15 @@ interface StreamSource {
      * so the app can verify each tier against the device's real decoder capabilities
      * without re-requesting the model per tier switch.
      */
-    fun ladder(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): List<StreamInfo> =
-        listOf(stream(id, maxQuality, type, metadataAhead, speculative))
+    fun ladder(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        seriesId: String = "",
+    ): List<StreamInfo> =
+        listOf(stream(id, maxQuality, type, metadataAhead, speculative, seriesId))
 
     /**
      * Re-register the device identity before a retry after a transient empty answer
@@ -62,10 +77,13 @@ interface StreamSource {
             webUa: String,
             site: String,
             webFallback: StreamSource = WebFallbackStreamSource(http, webUa, site),
+            session: PlaybackDeviceSession = PlaybackDeviceSession.shared,
         ): List<StreamSource> =
             listOf(
-                MobilePlaybackStreamSource(http),
-                MultiVideoModelStreamSource(transport, http),
+                // The verified current gate is the signed video_tab GET inside
+                // MultiVideoModelStreamSource. It must be first: a timed-out legacy
+                // attempt in front of it consumes the whole foreground budget.
+                MultiVideoModelStreamSource(transport, http, session),
                 AppApiStreamSource(transport),
                 webFallback,
                 PublicMp4StreamSource(http, webUa, site),
@@ -86,23 +104,41 @@ interface StreamSource {
 internal class StreamScheduler(private val sources: List<StreamSource>) {
     private val log = java.util.logging.Logger.getLogger("com.hongguotv.core.stream")
 
-    /** Independent device identities one foreground ladder read may try. */
-    private companion object { const val MAX_EMPTY_RETRIES = 4 }
+    /**
+     * One refresh is enough to prove whether the anonymous identity is the problem.
+     * The old four-round storm multiplied every server slowdown by the size of the
+     * whole channel list and was the main cause of the multi-minute "playback timeout".
+     */
+    private companion object {
+        const val MAX_EMPTY_RETRIES = 1
+        const val FOREGROUND_BUDGET_MS = 10_000L
+        const val SPECULATIVE_BUDGET_MS = 6_000L
+    }
 
-    fun stream(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamInfo {
+    fun stream(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        seriesId: String = "",
+    ): StreamInfo = PlaybackRequestBudget.run(
+        if (speculative) SPECULATIVE_BUDGET_MS else FOREGROUND_BUDGET_MS
+    ) {
         var last: IOException? = null
+        var deterministic: PlaybackSourceUnavailableException? = null
         for (source in sources) {
             try {
-                return source.stream(id, maxQuality, type, metadataAhead, speculative)
+                return@run source.stream(id, maxQuality, type, metadataAhead, speculative, seriesId)
             } catch (e: IOException) {
-                last = e
+                if (e is PlaybackSourceUnavailableException) deterministic = e else last = e
                 log.warning("channel ${source.name} failed for $id: $e")
             } catch (e: RuntimeException) {
                 last = IOException("播放通道 ${source.name} 返回了无法解析的内容", e)
                 log.warning("channel ${source.name} parse failure for $id: $e")
             }
         }
-        throw last ?: IOException("没有可用的播放通道")
+        throw deterministic ?: last ?: IOException("没有可用的播放通道")
     }
 
     /**
@@ -122,10 +158,21 @@ internal class StreamScheduler(private val sources: List<StreamSource>) {
      * identity" retries while upstream on the same emulator played 540x960 fine,
      * and a force-stop (which drops the in-memory identity) played on the first try.
      */
-    fun ladder(id: String, maxQuality: Int, type: ContentType, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): List<StreamInfo> {
-        var last: IOException? = null
+    fun ladder(
+        id: String,
+        maxQuality: Int,
+        type: ContentType,
+        metadataAhead: List<String> = emptyList(),
+        speculative: Boolean = false,
+        seriesId: String = "",
+    ): List<StreamInfo> = PlaybackRequestBudget.run(
+        if (speculative) SPECULATIVE_BUDGET_MS else FOREGROUND_BUDGET_MS
+    ) {
         var refreshes = 0
         while (true) {
+            var last: IOException? = null
+            var lastRecoverable = false
+            var deterministic: PlaybackSourceUnavailableException? = null
             var recoverable = false
             for (source in sources) {
                 // Capability-first playback must stay on the SIGNED App API channels
@@ -139,18 +186,47 @@ internal class StreamScheduler(private val sources: List<StreamSource>) {
                 // website channel for the legacy stream() path only.
                 if (source.name == "public-mp4") continue
                 try {
-                    val tiers = source.ladder(id, maxQuality, type, metadataAhead, speculative)
+                    val tiers = source.ladder(
+                        id,
+                        maxQuality,
+                        type,
+                        metadataAhead,
+                        speculative,
+                        seriesId,
+                    )
                     if (tiers.isNotEmpty()) return tiers
                 } catch (e: IOException) {
-                    last = e
+                    if (e is PlaybackSourceUnavailableException) {
+                        deterministic = e
+                        lastRecoverable = false
+                    } else {
+                        last = e
+                        lastRecoverable = identityRecoverable(e)
+                    }
                     if (identityRecoverable(e)) recoverable = true
                     log.warning("channel ${source.name} ladder failed for $id: $e (identity refresh=$refreshes)")
                 } catch (e: RuntimeException) {
                     last = IOException("播放通道 ${source.name} 返回了无法解析的内容", e)
+                    lastRecoverable = false
                     log.warning("channel ${source.name} ladder parse failure for $id: $e")
                 }
             }
-            if (speculative || refreshes >= MAX_EMPTY_RETRIES || !recoverable) break
+            if (speculative || refreshes >= MAX_EMPTY_RETRIES || !recoverable) {
+                val failure = last ?: deterministic ?: IOException("没有可用的播放通道")
+                // A source that explicitly says "not available" cannot be healed by
+                // another identity; keep that answer even if another channel timed out.
+                if (deterministic != null) throw deterministic
+                // Only the FINAL failure of the round decides the user-visible
+                // category. An empty answer followed by a plain timeout must stay a
+                // timeout (retryable), not become a deterministic source failure.
+                if (recoverable && lastRecoverable) {
+                    throw PlaybackSourceUnavailableException(
+                        "片源接口暂时不可用，已停止重复重试，请稍后再试",
+                        failure,
+                    )
+                }
+                throw failure
+            }
             refreshes++
             log.warning("signed round empty/rejected; refreshing ALL channel identities (refresh $refreshes/$MAX_EMPTY_RETRIES)")
             // Refresh EVERY channel, most importantly the primary one. Refreshing only
@@ -158,10 +234,13 @@ internal class StreamScheduler(private val sources: List<StreamSource>) {
             // that the next round's first request actually uses.
             sources.forEach { runCatching { it.refreshIdentity() } }
             try { Thread.sleep(350L * refreshes) }
-            catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+            catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException("播放请求已取消")
+            }
             // Start the chain over from the primary channel on the fresh identity.
         }
-        throw last ?: IOException("没有可用的播放通道")
+        throw InterruptedIOException("播放请求已取消")
     }
 
     /**
@@ -177,3 +256,13 @@ internal class StreamScheduler(private val sources: List<StreamSource>) {
                 it is AppApiRejectedException
         }
 }
+
+/**
+ * A deterministic source failure (HTTP 403/404, protected DASH not playable by this
+ * client, or an exhausted lookup). Automatic recovery must not hammer it three more
+ * times; skipping episodes or a manual retry is the only useful next action.
+ */
+class PlaybackSourceUnavailableException(
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
