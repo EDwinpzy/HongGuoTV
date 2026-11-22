@@ -480,3 +480,22 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 稳定性 | PASS | 预览进入、OK 播放、上下切集和 BACK 退出期间无 `FATAL EXCEPTION` / `ANR` |
 
 限制：S621 输入均为 ADB 注入，不是物理遥控器；本轮未继续排查弹幕显示问题，也未验证全部推荐片源、数小时连续播放和不同 TV 型号。发布验证只覆盖预览、同剧确认、播放器上下切集和退出层级。
+
+## 2026-11-22 v1.1.17 仅 ByteVC2 片源的 HEVC 兜底恢复（Release 实机）
+
+发布版本为 `1.1.17 / 10117`。验证分支为 `codex/episode-flat-grid`；下列 S621 实机证据来自同一修复提交 `b71f76a` 的 Release 构建，构建时版本名仍为 `1.1.16`，`1.1.17` 包已完成覆盖安装但未重复导航复测。
+
+根因：目标剧集《硬核求生恋爱指南》第 6 集（videoId `7708197063116196888`）的 `video_tab` 响应 5 档全部为 `bytevc2`（H.266/VVC），S621 只有 `c2.mtk.hevc.decoder`，没有 VVC 解码器。服务端 `fallback_api` 自带 `codec_type=4`；原兼容请求使用 `codec_type=0&force_codec=h264`，实测仍返回全部 `bytevc2`，所以重试和“尝试 720P”都无效。
+
+修复：当模型全部为 `bytevc2/bvc2` 时，把 `fallback_api` 的 `codec_type` 改为 `3`（ByteVC1/HEVC）；若仍不可播放，再尝试 `1`（H.265）。兼容请求不再附加无效的 `force_codec`，且最多两次请求。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 接口实测 | PASS | 第 6 集 `codec_type=3` 返回 5 档 `bytevc1`：1080P/720P/576P/480P/360P；`codec_type=4` 与 `0+force_codec=h264` 均仍为 `bytevc2` |
+| S621 第 6 集首帧（修复构建） | PASS | 同一提交 `b71f76a` 的 Release（版本名 `1.1.16`）覆盖安装后从第 5 集按 `↓` 进入第 6 集，`Playback selected: 1080P/bytevc1/1920x1080`，`hvc1/1920x1080 supported=true`，`Playback first frame episode=6 ... elapsedMs=264` |
+| 画面确认（修复构建） | PASS | 第 6 集截图显示正常剧集画面与字幕，不再出现 `source-unavailable` 错误页 |
+| 播放稳定性 | PASS | 第 5→6 集切换后无 `FATAL EXCEPTION` / `ANR` / `Playback failure` |
+| 单元回归 | PASS | `MultiVideoModelRotationTest` 覆盖 `3` 成功、`3` 失败后 `1` 成功，以及保留原 URL 其他参数 |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；282 项测试、0 失败、0 错误、10 跳过 |
+
+限制：S621 输入均为 ADB 注入，不是物理遥控器；实机证据来自版本名 `1.1.16` 的同一修复构建，`1.1.17` 只完成覆盖安装，用户要求发布前不再实机复测。本轮只验证第 6 集及紧随切集，未遍历全部仅返回 `bytevc2` 的剧集，也未验证其他 TV 型号的 HEVC 能力。
