@@ -474,7 +474,7 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | OK 进入正常播放器 | PASS | Release 预览《攻略诡异：我有一个女鬼催眠APP》按 OK 后仍为同剧第 1 集，没有串片；顶部频道标签栏消失，播放/暂停按钮、时间、进度条和集数出现 |
 | 正常播放器上下切集 | PASS | Release 播放器按 `↓` 从第 1 集切到第 3 集（连续两次按键均生效），仍为同一部剧，未切回推荐预览；Debug 另验证第 13→14 集 |
 | BACK 层级 | PASS | 正常播放器第一次 BACK 收起播放控制层，第二次返回剧集详情；预览 BACK 返回频道页。详情页和预览均不渲染返回按钮 |
-| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；180 项测试、0 失败 |
+| 完整门禁 | PASS | `:app:testDebugUnitTest :core:test :app:assembleRelease :app:bundleRelease :app:lintVitalRelease` 通过；280 项测试、0 失败、0 错误、9 跳过 |
 | 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `BB359AA05F028C34ED240C603F32B3D87024E9D47B7B99454E9556E089F710B7`；AAB SHA-256 `CBC4EA4C52DF1DF517BB5AE22C592C21A3D71362F8F7C1B565762669AE90E6D3` |
 | 覆盖安装 | PASS | S621 覆盖安装 Release `1.1.16 / 10116` 成功，应用数据保留 |
 | 稳定性 | PASS | 预览进入、OK 播放、上下切集和 BACK 退出期间无 `FATAL EXCEPTION` / `ANR` |
