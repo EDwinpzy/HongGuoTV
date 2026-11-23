@@ -542,3 +542,33 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 覆盖安装 | PASS | S621 覆盖安装最终 Release `1.1.19 / 10119` 成功，应用数据与登录态保留。 |
 
 限制：S621 输入均为 ADB 注入，不是物理遥控器；本轮只验证该剧第 4–6 集的起播与自动连播，未遍历全部空正文剧集、数小时连续播放及其他 TV 型号。实机过程中曾出现一次 `进度上传失败：云端观看历史写入失败：账号接口不可用（错误码 100）`，与片源恢复无直接关系，未纳入本次播放验收；账号与云端历史链路仍待单独排查。
+
+## 2026-11-24 v1.1.20 长剧集详情页与 1080P 播放平滑度（Release 实机）
+
+发布版本为 `1.1.20 / 10120`。验证分支为 `codex/detail-section-overflow`，基于 `v1.1.19 / 6400c18`；S621 覆盖安装同签名 Release，应用数据与登录态保留。
+
+根因有两层：
+
+- 详情页分组按钮原先直接放在水平 `LinearLayout`。331 集剧集有 17 个分组，最后一个可见按钮被压缩成很窄的宽度，文字换行后把分组行撑到约 385px 高，下面因此出现大面积空白。
+- 播放器使用 `TextureView` 时，1080P 每一帧都要先复制到 GPU，再由应用 UI 合成。S621 能硬解 1080P HEVC，但这条复制路径会错过 30fps 的帧截止时间。同机 A/B 中 `TextureView` 的帧间隔为 `p50=32.7ms / p90=46.6ms / p99=61.9ms`，126 个间隔有 24 个超过 40ms；`SurfaceView` 直接交给 Hardware Composer，结果为 `p50=33.33ms / p90=33.33ms / p99=33.43ms`，126 个间隔没有一个超过 40ms。
+
+修复：
+
+- 分组按钮放入水平 `HorizontalScrollView`，保持每个按钮的自然宽度；选中分组时自动滚动到可见位置，不再挤压文字或撑高整行。
+- 播放视图改回 `SurfaceView`，让 1080P 视频使用独立 Hardware Composer 视频层，避免每帧 GPU 复制。播放器在生命周期变化时释放并重建唯一的视频 Surface，继续满足 S621 的两层 HWC 上限。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 331 集详情页 | PASS | 《人间忽又逢春》显示全 331 集，17 个分组横向平铺；分组行高度正常，下方集数网格紧接显示，不再出现用户截图中的大面积空白 |
+| 1080P/30fps 帧节奏 | PASS | 《人间忽又逢春》第 2 集 `hvc1/1920x1080@30fps`，连续采样 127 帧：`p50=33.33ms`、`p90=33.33ms`、`p99=33.43ms`，`>40ms=0` |
+| HWC 合成路径 | PASS | `dumpsys SurfaceFlinger` 的活动 HWC 层数为 2：视频层 `SurfaceView ... Comp Type=Device`、Buffer `YCRCB_420_SP`，应用 UI 层为 `Client` |
+| 1080P/25fps 显示匹配 | PASS | 《少夫人来自东北3》第 49 集 `1080x1920@25fps`，日志 `Display mode 50.0Hz`；首帧 `elapsedMs=1015`，视频层仍为 HWC `Device` |
+| 25fps 帧节奏与连播 | PASS | 连续采样 127 帧：`p50=40ms`、`p90=40ms`、`p99=56.67ms`；除自动切集边界 2 个间隔外均为 40ms，无 `Dropped video frames` 或音频 underrun；第 50 集预热首帧 `elapsedMs=197` |
+| 菜单叠加 | PASS | 播放中打开 MENU 选集侧栏，视频在侧栏后持续出画；HWC 仍为视频层 `Device` + UI 层 `Client`，未出现 `hwc overlay number exceed limit` |
+| 后台恢复 | PASS | 播放中按 HOME，5 秒后重新进入；第 10 秒截图正常显示视频与弹幕，HWC 恢复为 2 层且视频层为 `Device`，无黑屏或仅声音 |
+| 手动切集 | PASS | 播放中按 `↓` 切换下一集，首帧 `elapsedMs=311`，缓冲 `stalledMs=240`；画面、字幕与弹幕正常 |
+| 完整干净门禁 | PASS | `clean :core:test :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease :app:lintVitalRelease --no-build-cache` 通过；287 项测试、0 失败、0 错误、11 跳过（显式联网探针） |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `53D8EC83DB4F1ED207B4E6D8DE2F66559C291D97D33891215D51413E3F1A8660`；AAB SHA-256 `053DA936F439ACEFAB7394198195C7C8F7E4431D8E24DDC092BE7648BF2C4D41` |
+| 覆盖安装 | PASS | S621 从 `1.1.19 / 10119` 覆盖安装 `1.1.20 / 10120` 成功，应用数据与登录态保留 |
+
+限制：S621 输入均为 ADB 注入，不是物理遥控器；截图和 SurfaceFlinger 不能替代投影幕布的人工观察。本轮验证了 30fps/60Hz、25fps/50Hz、菜单、后台恢复、手动切集和自动连播，但未覆盖数小时连续播放、全部 331 集、弱网抖动及其他 TV 芯片/固件。其他设备若仍出现卡顿，应优先核对 `Dropped video frames`、`Frame offset`、`Playback buffering`、`VideoDataSource slow read` 和 HWC 视频层是否仍为 `Device`。
