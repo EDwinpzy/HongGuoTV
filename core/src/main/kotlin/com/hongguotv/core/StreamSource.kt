@@ -80,9 +80,11 @@ interface StreamSource {
             session: PlaybackDeviceSession = PlaybackDeviceSession.shared,
         ): List<StreamSource> =
             listOf(
-                // The verified current gate is the signed video_tab GET inside
-                // MultiVideoModelStreamSource. It must be first: a timed-out legacy
-                // attempt in front of it consumes the whole foreground budget.
+                // Current App protocol (0.16.14): preload/v1 with the v5 Medusa
+                // field-21 fix, then the same-identity video_tab GET. Keep this
+                // channel first: it is the server's current gate and its requests
+                // are bounded by PlaybackRouteTransport.
+                MobilePlaybackStreamSource(http, session),
                 MultiVideoModelStreamSource(transport, http, session),
                 AppApiStreamSource(transport),
                 webFallback,

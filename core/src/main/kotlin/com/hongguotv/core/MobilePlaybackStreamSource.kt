@@ -7,6 +7,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.zip.GZIPOutputStream
 import okhttp3.CookieJar
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -15,13 +16,19 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Current App playback channel (upstream N3urda 0.16.5).
+ * Current App playback channel (upstream N3urda 0.16.14).
  *
- * The old `/novel/player/multi_video_model/v1` endpoint now answers every request
- * with HTTP 200 and a zero-byte body. The official mobile player moved to
- * `/novel/player/multi_video_model/player/v1` and signs the exact gzip bytes with
- * the v04.10.03 carrier. This source is intentionally separate from the retired v3
- * channel: if the endpoint changes again, only this channel needs replacement.
+ * 2026-11-23: the server started answering HTTP 200 + 0 bytes to both the
+ * retired `/novel/player/multi_video_model/v1` flow and the previous v5
+ * `player/v1` request. The upstream same-request A/B isolated the wire
+ * difference to Medusa field 21 (377 -> 312) together with the current
+ * 7.4.5.32 App profile. The primary request now posts the gzip model body to
+ * `reading.snssdk.com/novel/player/multi_video_model/preload/v1`; an empty
+ * answer falls back to the same-identity `video_tab` GET, and a model that
+ * only carries ByteVC2 uses the App-provided `fallback_api` codec negotiation.
+ *
+ * This channel stays pure Kotlin: no official App, native signing SDK, proxy
+ * or website player is involved.
  */
 internal class MobilePlaybackStreamSource(
     private val http: OkHttpClient,
@@ -31,8 +38,11 @@ internal class MobilePlaybackStreamSource(
 ) : StreamSource {
     override val name = "mobile-v5"
 
-    private val mobileUa =
-        "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
+    /** Current App/SDK requests are accepted with the platform HTTP agent. */
+    private val playbackUa: String
+        get() = System.getProperty("http.agent")
+            ?.takeIf { it.isNotBlank() }
+            ?: "okhttp/4.12.0"
 
     override fun stream(
         id: String,
@@ -42,7 +52,7 @@ internal class MobilePlaybackStreamSource(
         speculative: Boolean,
         seriesId: String,
     ): StreamInfo {
-        val tiers = ladder(id, maxQuality, type, metadataAhead, speculative)
+        val tiers = ladder(id, maxQuality, type, metadataAhead, speculative, seriesId)
         val best = tiers.filter { it.qualityValue in 1..maxQuality }.maxWithOrNull(betterTier)
             ?: tiers.filter { it.qualityValue <= 0 }.maxWithOrNull(betterTier)
             ?: tiers.minWithOrNull(betterTier)
@@ -64,45 +74,33 @@ internal class MobilePlaybackStreamSource(
         val profile = if (speculative) session.existing()
             ?: throw IOException("播放设备尚未就绪")
         else session.profile(http)
-        val tiers = request(id, profile, speculative)
-        val compatible = tiers.filter { isTvCompatible(it.codec) }
-        val others = tiers.filterNot { isTvCompatible(it.codec) }
-        return compatible.sortedByDescending { it.qualityValue } +
-            others.sortedByDescending { it.qualityValue }
+        return try {
+            currentModel(id, profile)
+        } catch (empty: EmptyPlaybackResponseException) {
+            // Same identity, current profile: the GET is the server's documented
+            // fallback when the primary preload path answers a zero-byte body.
+            videoTab(id, profile, speculative) ?: throw empty
+        }
     }
 
     override fun refreshIdentity() {
         runCatching { session.playbackRotate(http) }
     }
 
-    private fun request(
+    /** Primary current-App model request. */
+    private fun currentModel(
         id: String,
         profile: PlaybackDeviceSession.Profile,
-        speculative: Boolean,
     ): List<StreamInfo> {
         if (Thread.currentThread().isInterrupted) throw IOException("请求已取消")
         val now = clock()
-        val query = linkedMapOf(
-            "aid" to "8662",
-            "app_name" to "novelread",
-            "version_code" to "74332",
-            "version_name" to "7.4.3.32",
-            "channel" to "vivo_8662_64",
-            "device_platform" to "android",
-            "device_type" to "PGT-AN10",
-            "os_version" to "12",
-            "update_version_code" to "74332",
-            "iid" to profile.values.getValue("iid"),
-            "cdid" to profile.values.getValue("cdid"),
-            "device_id" to profile.values.getValue("device_id"),
-            "_rticket" to now.toString(),
-        )
+        val query = currentQuery(profile) + ("_rticket" to now.toString())
         val payload = JSONObject()
             .put(
                 "biz_param",
                 JSONObject()
                     .put("detail_page_version", 0)
-                    .put("device_level", 3)
+                    .put("device_level", 2)
                     .put("disable_digg_stat", false)
                     .put("disable_video_relate_book", false)
                     .put("need_all_video_definition", true)
@@ -111,60 +109,176 @@ internal class MobilePlaybackStreamSource(
                     .put("use_server_dns", false)
                     .put("video_platform", 1024),
             )
-            .put(
-                "mixed_video_id_map",
-                JSONObject().put("1004", JSONArray().put(id)),
-            )
-            .put("dr_scene", "player")
+            .put("mixed_video_id_map", JSONObject().put("1004", JSONArray().put(id)))
+            .put("dr_scene", "preload")
         val gzip = gzip(payload.toString().toByteArray(Charsets.UTF_8))
-        val signed = signer.signPlayback(ENDPOINT, query, gzip, now)
+        val signed = signer.signPlayback(MODEL_ENDPOINT, query, gzip, now)
         val request = Request.Builder()
             .url(signed.url)
-            .header("User-Agent", mobileUa)
+            .header("User-Agent", playbackUa)
             .header("Accept", "application/json")
             .header("Content-Encoding", "gzip")
-            .header("x-ss-stub", MessageDigest.getInstance("MD5").digest(gzip).hex().uppercase())
+            .header("x-ss-stub", md5(gzip))
             .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
             .post(gzip.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
         val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        if (speculative && Thread.currentThread().isInterrupted) throw IOException("请求已取消")
-        return RequestScope.execute(PlaybackRouteTransport.call(transport,request)) { response ->
+        return RequestScope.execute(PlaybackRouteTransport.call(transport, request)) { response ->
             if (!response.isSuccessful) {
                 throw IOException("播放接口请求失败（HTTP ${response.code}）")
             }
-            val body = response.body ?: throw IOException("播放接口响应为空")
-            val limit = 2L * 1024 * 1024
-            if (body.contentLength() > limit) throw IOException("播放信息过大")
-            val source = body.source()
-            source.request(limit + 1)
-            if (source.buffer.size > limit) throw IOException("播放信息过大")
-            val text = source.readUtf8()
-            if (text.isBlank()) throw EmptyPlaybackResponseException("stage=mobile-v5")
-            val root = try {
-                JSONObject(text)
-            } catch (error: Exception) {
-                throw IOException("播放接口返回了无法解析的内容", error)
+            val text = readLimited(response, "播放接口")
+            if (text.isBlank()) {
+                throw EmptyPlaybackResponseException("stage=mobile-preload")
             }
+            val root = json(text)
             val code = root.optInt("code", root.optInt("Code", -1))
             if (code != 0) throw AppApiRejectedException(code)
             val data = root.optJSONObject("data")
                 ?: throw IOException("播放信息格式异常")
             val entries = data.optJSONObject("1004") ?: data
             val entry = entries.optJSONObject(id)
+                ?: entries.keys().asSequence()
+                    .mapNotNull { entries.optJSONObject(it) }
+                    .firstOrNull { it.opt("video_model") != null }
                 ?: throw IOException("播放接口未返回本集片源")
-            val model = when (val raw = entry.opt("video_model")) {
-                is JSONObject -> raw
-                is String -> runCatching { JSONObject(raw) }.getOrNull()
-                else -> null
-            } ?: throw IOException("播放信息格式异常")
-            val tiers = tiers(model)
-            if (tiers.isEmpty()) {
-                throw IOException("本集没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-            }
-            tiers
+            val model = modelValue(entry.opt("video_model"))
+                ?: throw IOException("播放信息格式异常")
+            tiersOrCompatible(model, transport)
         }
     }
+
+    /**
+     * Same-identity `video_tab` GET. Its v5 signature must cover the digest of
+     * EMPTY bytes (MD5("")), not the 16 zero bytes a null body would produce.
+     */
+    private fun videoTab(
+        id: String,
+        profile: PlaybackDeviceSession.Profile,
+        speculative: Boolean,
+    ): List<StreamInfo>? {
+        if (Thread.currentThread().isInterrupted) return null
+        val now = clock()
+        val values = currentQuery(profile) + linkedMapOf(
+            "video_id" to id,
+            "video_id_type" to "0",
+            "device_level" to "1",
+            "need_all_video_definition" to "1",
+            "need_mp4_align" to "0",
+            "use_os_player" to "0",
+            "video_platform" to "1024",
+            "source" to "0",
+            "from_video_id" to "",
+            "_rticket" to now.toString(),
+        )
+        val hosts = if (speculative) TAB_HOSTS.take(1) else TAB_HOSTS
+        for (host in hosts) {
+            if (Thread.currentThread().isInterrupted) return null
+            // signPlayback appends and signs the final query; passing a URL that
+            // already carries '?' would produce a second query string.
+            val base = "https://$host$TAB_PATH"
+            val signed = signer.signPlayback(base, values, ByteArray(0), now)
+            val request = Request.Builder()
+                .url(signed.url)
+                .header("User-Agent", playbackUa)
+                .header("Accept", "application/json; charset=utf-8")
+                .header("Accept-Language", "zh-CN,zh;q=0.9")
+                .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
+                .removeHeader("x-ss-stub")
+                .removeHeader("Content-Type")
+                .removeHeader("Content-Encoding")
+                .get()
+                .build()
+            val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+            val tiers = try {
+                RequestScope.execute(PlaybackRouteTransport.call(transport, request)) { response ->
+                    if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
+                    val text = readLimited(response, "video_tab")
+                    if (text.isBlank()) return@execute null
+                    val root = json(text)
+                    if (root.optInt("code", root.optInt("Code", -1)) != 0) return@execute null
+                    val data = root.optJSONObject("data") ?: return@execute null
+                    val rows = data.optJSONObject("video_model_data") ?: data
+                    val row = rows.optJSONObject(id)
+                        ?: rows.keys().asSequence()
+                            .mapNotNull { rows.optJSONObject(it) }
+                            .firstOrNull { it.opt("video_model") != null }
+                        ?: return@execute null
+                    val model = modelValue(row.opt("video_model")) ?: return@execute null
+                    tiersOrCompatible(model, transport)
+                }
+            } catch (interrupted: java.io.InterruptedIOException) {
+                throw interrupted
+            } catch (_: IOException) {
+                null
+            }
+            if (!tiers.isNullOrEmpty()) return tiers
+        }
+        return null
+    }
+
+    /**
+     * App-provided VOD codec negotiation; no website or account headers.
+     * ByteVC2-only models advertise `fallback_api` and answer `codec_type=1`
+     * (H.265) or `codec_type=3` (H.264/HEVC) with TV-decodable tiers.
+     */
+    private fun tiersOrCompatible(model: JSONObject, transport: OkHttpClient): List<StreamInfo> {
+        val inline = orderTiers(tiers(model))
+        if (inline.isNotEmpty()) return inline
+        val endpoint = fallbackUrl(model).takeIf { it.startsWith("https://") }
+            ?: throw IOException("本集没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+        for (codec in listOf("1", "3")) {
+            if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("请求已取消")
+            val url = endpoint.toHttpUrl().newBuilder()
+                .setQueryParameter("codec_type", codec)
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            val compatible = try {
+                RequestScope.execute(transport.newCall(request)) { response ->
+                    if (!response.isSuccessful) return@execute emptyList()
+                    val root = json(readLimited(response, "片源兼容接口"))
+                    val data = root.optJSONObject("video_info")?.optJSONObject("data")
+                        ?: root.optJSONObject("data")
+                        ?: return@execute emptyList()
+                    orderTiers(tiers(data))
+                }
+            } catch (interrupted: java.io.InterruptedIOException) {
+                throw interrupted
+            } catch (_: IOException) {
+                emptyList()
+            }
+            if (compatible.isNotEmpty()) return compatible
+        }
+        throw IOException("本集没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+    }
+
+    private fun currentQuery(profile: PlaybackDeviceSession.Profile): LinkedHashMap<String, String> =
+        linkedMapOf(
+            "aid" to "8662",
+            "app_name" to "novelread",
+            "version_code" to "74532",
+            "version_name" to "7.4.5.32",
+            "update_version_code" to "74532",
+            "manifest_version_code" to "74532",
+            "os" to "android",
+            "ssmix" to "a",
+            "channel" to "update_64",
+            "device_platform" to "android",
+            "device_type" to "25053RT47C",
+            "device_brand" to "Redmi",
+            "os_version" to "16",
+            "os_api" to "36",
+            "ac" to "wifi",
+            "language" to "zh",
+            "host_abi" to "arm64-v8a",
+            "iid" to profile.values.getValue("iid"),
+            "cdid" to profile.values.getValue("cdid"),
+            "device_id" to profile.values.getValue("device_id"),
+        )
 
     private fun tiers(model: JSONObject): List<StreamInfo> {
         val videoList = model.opt("video_list") ?: return emptyList()
@@ -252,11 +366,57 @@ internal class MobilePlaybackStreamSource(
             ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
     }
 
+    private fun orderTiers(tiers: List<StreamInfo>): List<StreamInfo> {
+        val compatible = tiers.filter { isTvCompatible(it.codec) }
+        val others = tiers.filterNot { isTvCompatible(it.codec) }
+        return compatible.sortedByDescending { it.qualityValue } +
+            others.sortedByDescending { it.qualityValue }
+    }
+
+    private fun isTvCompatible(codec: String) =
+        codec.lowercase(Locale.ROOT) in setOf("h264", "avc", "avc1", "avc3")
+
+    private fun fallbackUrl(model: JSONObject): String {
+        val raw = model.opt("fallback_api")
+        return when (raw) {
+            is JSONObject -> raw.str("fallback_api")
+            is JSONArray -> raw.optString(0)
+            is String -> raw
+            else -> ""
+        }
+    }
+
+    private fun modelValue(value: Any?): JSONObject? = when (value) {
+        is JSONObject -> value
+        is String -> runCatching { JSONObject(value) }.getOrNull()
+        else -> null
+    }
+
+    private fun json(text: String): JSONObject =
+        try {
+            JSONObject(text)
+        } catch (error: Exception) {
+            throw IOException("播放接口返回了无法解析的内容", error)
+        }
+
+    private fun readLimited(response: okhttp3.Response, label: String): String {
+        val body = response.body ?: throw IOException("${label}响应为空")
+        val limit = 2L * 1024 * 1024
+        if (body.contentLength() > limit) throw IOException("${label}返回内容过大")
+        val source = body.source()
+        source.request(limit + 1)
+        if (source.buffer.size > limit) throw IOException("${label}返回内容过大")
+        return source.readUtf8()
+    }
+
     private fun gzip(data: ByteArray): ByteArray {
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(data) }
         return output.toByteArray()
     }
+
+    private fun md5(data: ByteArray): String =
+        MessageDigest.getInstance("MD5").digest(data).joinToString("") { "%02X".format(it) }
 
     private fun lenientB64(value: String): ByteArray {
         val normalized = value.trim()
@@ -267,12 +427,15 @@ internal class MobilePlaybackStreamSource(
         return decode64(normalized.padEnd((normalized.length + 3) / 4 * 4, '='))
     }
 
-    private fun isTvCompatible(codec: String) =
-        codec.lowercase(Locale.ROOT) in setOf("h264", "avc", "avc1", "avc3")
-
     private companion object {
-        const val ENDPOINT =
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
+        const val MODEL_ENDPOINT =
+            "https://reading.snssdk.com/novel/player/multi_video_model/preload/v1"
+        const val TAB_PATH = "/reading/bookapi/video_tab/multi_video_model/v1/"
+        val TAB_HOSTS = listOf(
+            "api5-normal-sinfonlineb.fqnovel.com",
+            "api5-normal-hl.fqnovel.com",
+            "api5-normal-lf.fqnovel.com",
+        )
         val sharedSigner = Signer.sharedV5()
         val betterTier: Comparator<StreamInfo> =
             compareBy<StreamInfo> {

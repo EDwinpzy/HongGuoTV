@@ -630,11 +630,13 @@ class ContentRepositoryTest {
 
     private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
-            // The v5 mobile channel is the production first choice; these fixtures
-            // exercise the older fallback chain, so fail v5 locally without network.
+            // The current-App v5 channel is the production first choice; these
+            // fixtures exercise the older video-tab/POST chain, so fail v5 locally
+            // without network.
             if (chain.request().url.encodedPath in setOf(
                     "/novel/player/multi_video_model/v1",
                     "/novel/player/multi_video_model/player/v1",
+                    "/novel/player/multi_video_model/preload/v1",
                 )) {
                 return@addInterceptor Response.Builder().request(chain.request())
                     .protocol(Protocol.HTTP_1_1).code(400).message("Bad Request")
