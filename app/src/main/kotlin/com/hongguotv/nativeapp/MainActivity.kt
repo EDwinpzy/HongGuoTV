@@ -2417,7 +2417,24 @@ class MainActivity: Activity() {
             sectionRow.addView(tab,lp().apply { width=LinearLayout.LayoutParams.WRAP_CONTENT; if(index<sections.lastIndex) rightMargin=dp(6) })
             tab
         }
-        content.addView(sectionRow)
+        // A plain horizontal LinearLayout squeezes the first partially visible group
+        // into a sliver; its wrapped text then makes the whole row hundreds of dp tall
+        // (351 episodes = 18 groups). Keep natural chip widths and let the row scroll.
+        val sectionScroll=HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled=false
+            isFocusable=false
+            isFocusableInTouchMode=false
+            clipToPadding=false
+        }
+        sectionScroll.addView(sectionRow,FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+        ))
+        content.addView(sectionScroll,lp(-1,-2))
+        sectionScroll.post {
+            val selected=sectionButtons.getOrNull(episodeSection) ?: return@post
+            sectionScroll.scrollTo((selected.left-dp(8)).coerceAtLeast(0),0)
+        }
         val section=sections[episodeSection]
         val episodes=mutableListOf<View>()
         section.chunked(10).forEach { numbers ->
