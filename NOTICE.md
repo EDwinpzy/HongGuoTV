@@ -11,6 +11,7 @@
    - https://github.com/N3urda/hongguoTV
    - 为上述上游提供 TV 工程骨架、焦点导航、卡片布局和内容接口基础。
    - v5 移动端播放通道（`MobilePlaybackStreamSource`、`Signer` v5 签名、`AesV3`、`V5Constants`）移植自提交 `18c37c2a` / 发布 `0.16.5`，按 GPL-3.0-only 使用。
+   - 2026-11-23 的播放空响应恢复（Medusa 第 21 字段 `377 -> 312`、7.4.5.32 `preload/v1` 请求、同身份 `video_tab` 回退和 ByteVC2-only 兼容编码协商）参考提交 `ef328f3a` / 发布 `0.16.14`，并按本项目 Kotlin 架构独立接入。
 3. **qq294716498/HongguoTV-Phone-TV-NoAds**（仓库未声明许可证）
    - https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds
    - 上游曾参考其接口链路，并在 Kotlin 中独立实现等价逻辑；本项目没有复制其 Flutter/Go 源码。该来源继续按上游说明保留，供追溯。

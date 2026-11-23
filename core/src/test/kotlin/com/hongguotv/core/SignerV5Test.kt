@@ -8,6 +8,11 @@ import org.junit.Test
 
 /** Vectors derived independently from the v04.10.03 SDK carrier and digest. */
 class SignerV5Test {
+    @Test fun playbackWireField21MatchesCurrentAppProtocol() {
+        // 2026-11-23 live A/B: 377 produced HTTP 200 + 0B; 312 restored the model.
+        assertEquals(312, V5Constants.field21)
+    }
+
     @Test fun matchesCarrierVectorAtEachTimestampClass() {
         val source = hex(
             "13385d82a7ccf1163b6085aacff4193e6388add2f71c41668bb0d5fa1f44698e" +

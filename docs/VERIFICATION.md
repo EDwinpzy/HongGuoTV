@@ -516,3 +516,29 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 覆盖安装 | PASS | S621 覆盖安装 Release `1.1.18 / 10118` 成功，应用数据与登录态保留；发布后使用同一 APK 复核安装和播放 |
 
 限制：S621 输入均为 ADB 注入，不是物理遥控器；验证是自然连续播放和多次采样，不是每一帧都有弹幕。稀疏窗口可能没有真实评论，单张无弹幕截图不能证明拉取失败；数小时播放、全部剧集及其他 TV 型号仍未验证。
+
+## 2026-11-23 v1.1.19 播放空响应恢复（Release 实机）
+
+发布版本为 `1.1.19 / 10119`。验证分支为 `codex/playback-empty-response`，基于 `main@e311a76` 创建；S621 覆盖安装同签名 Release，应用数据与登录态保留。
+
+根因：S621 播放《红兜落处是良人》第 4 集（videoId `7704127035085425726`）时显示 `source-unavailable`。该集在旧 `video_tab` 与 `multi_video_model/player/v1` 两条 App 通道均返回 HTTP 200 且正文 0 字节，官网完整 H264 兜底返回 403，并非网络超时或解码失败。与上游 N3urda `ef328f3a`（0.16.14）做同请求 A/B 后，差异收敛到 v5 Medusa 第 21 字段：旧值 `377` 返回空正文，`312` 恢复模型；同时当前 App 已使用 `7.4.5.32` profile 和 `POST /novel/player/multi_video_model/preload/v1`（`dr_scene=preload`、`device_level=2`）。
+
+修复：
+
+- v5 签名第 21 字段由硬编码 `377` 改为 `V5Constants.field21 = 312`，并增加回归断言。
+- `mobile-v5` 主请求改为 `preload/v1`（gzip 正文、`x-ss-stub`、v5 三头）；空正文时用同一设备身份请求 `video_tab`，签名覆盖空字节的 MD5（`MD5("")`），移除 `x-ss-stub`、`Content-Type`、`Content-Encoding`，且不携带 Cookie。
+- 模型仅含 `bytevc2` 时改用 App 自带 `fallback_api`，依次尝试 `codec_type=1`、`3`，不依赖官网播放器。
+- 默认通道顺序改为 `mobile-v5`、`multi-video-model`、`app-api`、`web-fallback`、`public-mp4`。
+- 新增 `MobilePlaybackStreamSourceTest`（空响应回退、ByteVC2 兼容、默认顺序）和显式联网探针 `PlaybackRecoveryLiveProbeTest`（默认跳过，`HONGGUOTV_LIVE_PROBE=1` 启用）。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 同请求 A/B | PASS | 第 21 字段 `377`：HTTP 200 + 0 字节；`312`：恢复完整模型。 |
+| 核心联网探针 | PASS | `RECOVERY episode=7704127035085425726 quality=1080P codec=bytevc1 1920x1080 key=16`；媒体 `HTTP 206 bytes=131072`。 |
+| S621 第 4 集与连播 | PASS | 最终 Release 从“接着看”第 4 集 `01:00` 起播，`Playback selected: 1080P/bytevc1/1920x1080/587121bps`，首帧 `elapsedMs=2745`；随后自动连播第 5 集（首帧 1233 ms）和第 6 集（预热首帧 278 ms），未出现 `source-unavailable` 或 `Playback failure`。 |
+| 画面确认 | PASS | 播放截图显示正常剧集画面与字幕；`screencap` 不能替代投影物理画面的人工确认。 |
+| 完整干净门禁 | PASS | `clean :core:test :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease :app:lintVitalRelease --no-build-cache` 通过；287 项测试、0 失败、0 错误、11 跳过（显式联网探针）。 |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `D4A06757B24FF8D3CBC14505288E7A5A8A05F8A6A8D4C7EE71B84E7D0B7914A8`；AAB SHA-256 `123B27A3D13E74A778A3C91D6ADD90223E70EDEE6ABEC8D84AA7B6C68E8E5213`。 |
+| 覆盖安装 | PASS | S621 覆盖安装最终 Release `1.1.19 / 10119` 成功，应用数据与登录态保留。 |
+
+限制：S621 输入均为 ADB 注入，不是物理遥控器；本轮只验证该剧第 4–6 集的起播与自动连播，未遍历全部空正文剧集、数小时连续播放及其他 TV 型号。实机过程中曾出现一次 `进度上传失败：云端观看历史写入失败：账号接口不可用（错误码 100）`，与片源恢复无直接关系，未纳入本次播放验收；账号与云端历史链路仍待单独排查。
