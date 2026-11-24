@@ -49,6 +49,20 @@ private val bestFirstTier =
 
 internal data class PlaybackAttempt(val tier: StreamInfo,val forced: Boolean)
 
+internal enum class PlaybackSurfaceKind { SURFACE_VIEW, TEXTURE_VIEW }
+
+internal fun playbackSurfaceKind(
+    model: String,
+    fallback: Boolean,
+    width: Int?,
+    height: Int?,
+): PlaybackSurfaceKind {
+    val smallSource=width!=null && height!=null && width>0 && height>0 &&
+        width.toLong()*height<=640L*360L
+    return if(model.trim().equals("S621",ignoreCase=true) && (fallback || smallSource))
+        PlaybackSurfaceKind.TEXTURE_VIEW else PlaybackSurfaceKind.SURFACE_VIEW
+}
+
 internal fun formatSourceBitrate(bitsPerSecond: Long): String =
     if (bitsPerSecond >= 1_000_000) {
         String.format(Locale.ROOT, "%.2f Mbps", bitsPerSecond / 1_000_000.0)

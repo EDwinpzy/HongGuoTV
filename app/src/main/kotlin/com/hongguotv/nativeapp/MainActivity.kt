@@ -2649,10 +2649,7 @@ class MainActivity: Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if(!reuse) {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
-            val view=(layoutInflater.inflate(R.layout.tv_player_texture_view,root,false) as PlayerView).apply {
-                useController=false; resizeMode=frameResizeMode(); isFocusable=false
-                setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-            }
+            val view=newPlaybackView(PlaybackSurfaceKind.SURFACE_VIEW)
             playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
             val poster=ImageView(this).apply {
                 scaleType=ImageView.ScaleType.CENTER_CROP
@@ -2750,6 +2747,20 @@ class MainActivity: Activity() {
             }
             attemptedQuality=opened.info.qualityValue
             currentTrack=opened.track; currentTier=opened.info; currentTiers=opened.tiers
+            val surfaceKind=playbackSurfaceKind(
+                Build.MODEL,
+                opened.info.isFallback,
+                opened.track?.width,
+                opened.track?.height,
+            )
+            if(playerView?.tag!=surfaceKind) {
+                android.util.Log.i(
+                    "HongguoTV",
+                    "Playback surface: $surfaceKind model=${Build.MODEL} " +
+                        "fallback=${opened.info.isFallback} size=${opened.track?.width}x${opened.track?.height}",
+                )
+            }
+            replacePlaybackView(surfaceKind)
             val p=player ?: run {
                 val load=DefaultLoadControl.Builder().setBufferDurationsMs(20000,40000,1000,4000).setTargetBufferBytes(24*1024*1024).build()
                 val renderers=androidx.media3.exoplayer.DefaultRenderersFactory(this).setEnableDecoderFallback(true)
@@ -2971,6 +2982,25 @@ class MainActivity: Activity() {
         poster.animate().alpha(0f).setDuration(180).withEndAction {
             (poster.parent as? android.view.ViewGroup)?.removeView(poster)
         }.start()
+    }
+    private fun newPlaybackView(kind: PlaybackSurfaceKind): PlayerView {
+        val layout=if(kind==PlaybackSurfaceKind.TEXTURE_VIEW) R.layout.tv_player_texture_view else R.layout.tv_player_surface_view
+        return (layoutInflater.inflate(layout,root,false) as PlayerView).apply {
+            useController=false; resizeMode=frameResizeMode(); isFocusable=false
+            setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+            tag=kind
+        }
+    }
+    private fun replacePlaybackView(kind: PlaybackSurfaceKind) {
+        val old=playerView
+        if(old?.tag==kind) return
+        val replacement=newPlaybackView(kind)
+        val index=old?.let { root.indexOfChild(it).coerceAtLeast(0) } ?: 0
+        old?.player=null
+        if(old!=null) root.removeView(old)
+        playerView=replacement
+        root.addView(replacement,index,FrameLayout.LayoutParams(-1,-1))
+        replacement.player=player
     }
     private fun prefetchTargets(data: Detail,index: Int,quality: Int): List<String> =
         data.episodes.drop(index+1).take(PREFETCH_AHEAD).map { prefetchKey(it,quality) }
