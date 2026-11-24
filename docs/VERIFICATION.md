@@ -595,7 +595,7 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 场景 | 结果 | 证据摘要 |
 | --- | --- | --- |
 | 主页品牌图标 | PASS | 顶部左侧由旧透明标替换为官方橙绿渐变圆角图标，24dp 显示清晰，无拉伸或白边 |
-| 系统桌面横幅 | PASS | 桌面中的“红果短剧 / 免费短剧 · Android TV”横幅显示新图标与文案，未出现旧图标或占位图 |
+| 系统桌面横幅 | PASS | 桌面长方形卡片显示官方横向标识，副标题已移除；标识完整无裁切，左右留白均衡 |
 | 启动图标资源 | PASS | `mipmap-mdpi` 至 `mipmap-xxxhdpi` 五档图标与 `drawable-xhdpi/tv_banner.png` 已替换；旧 `app_logo_transparent.xml` 删除，代码无残留引用 |
 | 编译与单测 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过 |
 
