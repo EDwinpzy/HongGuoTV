@@ -3580,7 +3580,9 @@ class MainActivity: Activity() {
         player?.pause(); saveProgress()
         var resumeOnClose=true
         val next=PlayerSidebar(this,PlayerSidebarState(
-            data.series.title,data.series.cover,data.episodes.size,episodeIndex,
+            data.series.title,data.series.cover,
+            data.series.description.ifBlank { data.series.tags },
+            data.episodes.size,episodeIndex,
             library.playbackSpeed,library.maxQuality,actualQualityText(),library.frameMode,
             library.danmaku,library.danmakuSize,library.danmakuSpeed,library.danmakuRows,library.danmakuAlpha,
             sleepTimer.label(),

@@ -26,6 +26,7 @@ enum class PlayerSidebarTab { EPISODES, SETTINGS }
 data class PlayerSidebarState(
     val title: String,
     val cover: String?,
+    val synopsis: String,
     val episodeCount: Int,
     val current: Int,
     val speed: Float,
@@ -223,23 +224,13 @@ class PlayerSidebar(
         )
         copy.addView(
             label(
-                "第 ${state.current + 1} 集 / 共 ${state.episodeCount} 集 · 实际 ${state.actualQuality}",
+                state.synopsis.trim().ifBlank { "暂无简介" },
                 12f,
-                muted,
+                if (state.synopsis.isBlank()) muted else TvStyle.mutedBright,
             ).apply {
-                maxLines = 1
+                maxLines = 3
                 ellipsize = TextUtils.TruncateAt.END
-                setPadding(0, dp(7), 0, 0)
-            },
-        )
-        copy.addView(
-            label("分辨率上限 ${state.quality}P · 倍速 ${PlaybackSpeed.label(state.speed)}", 11.5f, accentSoft).apply {
-                setPadding(0, dp(6), 0, 0)
-            },
-        )
-        copy.addView(
-            label("遥控器：左右快进/快退 · 上下切集 · MENU 打开侧栏", 10.5f, muted).apply {
-                maxLines = 2
+                setLineSpacing(0f, 1.25f)
                 setPadding(0, dp(8), 0, 0)
             },
         )
