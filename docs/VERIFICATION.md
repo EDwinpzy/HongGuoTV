@@ -587,3 +587,16 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 编译与单测 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过 |
 
 限制：S621 输入均为 ADB 注入，不是物理遥控器；本轮只验证两个推荐批次与一次返回链路，未覆盖弱网续页失败、数小时连续滑动、全部账号推荐池及其他 TV 型号。未运行 Release 构建和 `lintVitalRelease`。
+
+## 2026-11-24 官方图标与 TV 横幅（Debug 实机）
+
+验证分支为 `codex/player-synopsis`；S621 覆盖安装同签名 Debug 包，应用数据与登录态保留；设备输入为 ADB 注入。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 主页品牌图标 | PASS | 顶部左侧由旧透明标替换为官方橙绿渐变圆角图标，24dp 显示清晰，无拉伸或白边 |
+| 系统桌面横幅 | PASS | 桌面中的“红果短剧 / 免费短剧 · Android TV”横幅显示新图标与文案，未出现旧图标或占位图 |
+| 启动图标资源 | PASS | `mipmap-mdpi` 至 `mipmap-xxxhdpi` 五档图标与 `drawable-xhdpi/tv_banner.png` 已替换；旧 `app_logo_transparent.xml` 删除，代码无残留引用 |
+| 编译与单测 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过 |
+
+限制：仅验证 S621 及其当前桌面；未覆盖其他 TV 启动器、桌面图标缓存异常、Release 构建和 `lintVitalRelease`。

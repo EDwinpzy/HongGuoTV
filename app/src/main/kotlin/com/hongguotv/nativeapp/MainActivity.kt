@@ -160,7 +160,7 @@ class MainActivity: Activity() {
         val brand=row()
         brand.addView(
             ImageView(this).apply {
-                setImageResource(com.hongguotv.nativeapp.R.drawable.app_logo_transparent)
+                setImageResource(com.hongguotv.nativeapp.R.drawable.hongguo_logo)
             },
             lp(dp(24),dp(24)).apply { rightMargin=dp(7) },
         )
@@ -1183,7 +1183,7 @@ class MainActivity: Activity() {
             setPadding(dp(5),dp(5),dp(5),dp(5)); background=TvStyle.glassBar(this@MainActivity)
         }
         val brand=row()
-        brand.addView(ImageView(this).apply { setImageResource(com.hongguotv.nativeapp.R.drawable.app_logo_transparent) },lp(dp(24),dp(24)).apply { rightMargin=dp(7) })
+        brand.addView(ImageView(this).apply { setImageResource(com.hongguotv.nativeapp.R.drawable.hongguo_logo) },lp(dp(24),dp(24)).apply { rightMargin=dp(7) })
         brand.addView(text("红果短剧",17f).apply { typeface=TvStyle.typeface(true); letterSpacing=(-.01f) })
         top.addView(brand,lp(dp(112),dp(32)))
         listOf(
