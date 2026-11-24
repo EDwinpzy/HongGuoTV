@@ -600,3 +600,23 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 编译与单测 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过 |
 
 限制：仅验证 S621 及其当前桌面；未覆盖其他 TV 启动器、桌面图标缓存异常、Release 构建和 `lintVitalRelease`。
+
+## 2026-11-24 v1.1.21 推荐预览返回、侧栏简介与官方横幅（Release 实机）
+
+发布版本为 `1.1.21 / 10121`。验证分支为 `codex/player-synopsis`，基于 `v1.1.20 / 2804ffd`；S621 从 `1.1.20 / 10120` 覆盖安装同签名 Release，应用数据与登录态保留。设备输入均为 ADB 注入，不是物理遥控器。
+
+本版汇总三类改动：推荐预览按 OK 交给正常播放器后，BACK 可回到当前视频的预览；预览在推荐批次首尾继续按 `↑` / `↓` 会自动续页；播放器侧栏头部显示剧集简介；应用图标与 TV 横幅改为官方素材，横幅为无副标题的横向标识。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 推荐预览返回 | PASS | Release《明末：我以毒士为子入残局》预览按 OK 进入正式播放，两次 BACK 后回到同名预览，顶部标签与底部片名/简介恢复；日志首帧 `episode=2 preloaded=false reused=false elapsedMs=5420`，未重新取流 |
+| 侧栏简介与分组 | PASS | Release 正常播放器按 MENU 打开侧栏，头部显示 3 行简介；分组标签横向平铺（`1-60`、`61-120` … `421-…`），不再压缩换行 |
+| 桌面长方形横幅 | PASS | S621 桌面卡片显示官方横向标识，副标题已移除；标识完整无裁切，左右留白均衡 |
+| HWC 视频层 | PASS | `dumpsys SurfaceFlinger` 显示 `SurfaceView[...](BLAST)` 为 `Comp Type=Device`，Buffer `YCRCB_420_SP`、`640x360`；首帧与自动连播日志正常 |
+| 截图限制 | NOTE | S621 的 `screencap` / `screenrecord` 不包含 HWC `SurfaceView` 视频层；同机 `1.1.20` Release A/B 截图同样为黑帧，不能据此判断播放黑屏 |
+| 稳定性 | PASS | 预览、正式播放、侧栏和返回链路无 `FATAL EXCEPTION` / `ANR` |
+| 完整干净门禁 | PASS | `clean :core:test :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease :app:lintVitalRelease --no-build-cache` 通过；287 项测试、0 失败、0 错误、11 跳过 |
+| 签名与产物 | PASS | APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`；APK SHA-256 `5997816B69CA872E747E603FE48077A162470CC157C96347166B1D8C8D9AB2CA`；AAB SHA-256 `E1FE5F7EC3630119B44C52DAAF7925AE1E1E1D9F0026E3A153AF59373B7C9121` |
+| 覆盖安装 | PASS | S621 从 `1.1.20 / 10120` 覆盖安装 `1.1.21 / 10121` 成功，应用数据与登录态保留 |
+
+限制：S621 输入均为 ADB 注入；Release 只验证推荐预览返回、侧栏简介/分组、桌面横幅和稳定性，首尾自动续页的完整翻页证据来自同分支 Debug 实机（见上一节），未在 Release 重跑长列表；未覆盖数小时连续播放、弱网、其他 TV 型号。S621 截图不包含 HWC 视频层，视频出画由首帧日志、SurfaceFlinger 硬件层和自动连播状态共同确认，未用截图宣称视频画面通过。
