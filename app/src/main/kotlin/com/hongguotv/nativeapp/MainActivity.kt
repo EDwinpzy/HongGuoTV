@@ -103,6 +103,8 @@ class MainActivity: Activity() {
     private var recommendationIdentity=""
     /** Immersive recommendation feed: one series episode at a time, D-pad up/down switches items. */
     private var recommendationFeedMode=false
+    /** Formal playback was entered from the preview; BACK restores that same feed item. */
+    private var recommendationReturnToPreview=false
     private var recommendationFeedLoading=false
     private var recommendationFeedItems=emptyList<Series>()
     private var recommendationFeedIndex=-1
@@ -718,6 +720,7 @@ class MainActivity: Activity() {
         }
         if(tab==TAB_RECOMMEND || recommendationFeedMode || screen=="feed") {
             recommendationFeedMode=false; recommendationFeedLoading=false
+            recommendationReturnToPreview=false
             cancelRecommendationFeedJobs()
             recommendationFeedItems=emptyList(); recommendationFeedIndex=-1
             recommendationFeedPage=0; recommendationFeedHasMore=false
@@ -826,6 +829,7 @@ class MainActivity: Activity() {
     }
     private fun enterRecommendationFeed(fresh: Boolean=false) {
         recommendationFeedMode=false
+        recommendationReturnToPreview=false
         cancelRecommendationFeedJobs()
         recommendationFeedItems=emptyList(); recommendationFeedIndex=-1
         recommendationFeedPage=0; recommendationFeedHasMore=false
@@ -874,9 +878,11 @@ class MainActivity: Activity() {
             try {
                 val page=repository.recommendations(nextPage,account,identity)
                 main.post {
-                    if(!recommendationFeedMode || session!=recommendationFeedSession) return@post
+                    val feedActive=recommendationFeedMode || recommendationReturnToPreview
+                    if(!feedActive || session!=recommendationFeedSession) return@post
                     if(identity!=cloudAccount.recommendationIdentity) {
-                        enterRecommendationFeed(fresh=true)
+                        if(recommendationFeedMode) enterRecommendationFeed(fresh=true)
+                        else { recommendationFeedPageJob=null; recommendationFeedHasMore=false }
                         return@post
                     }
                     recommendationFeedPageJob=null
@@ -886,23 +892,34 @@ class MainActivity: Activity() {
                     recommendationFeedItems=recommendationFeedItems+fresh
                     recommendationFeedHasMore=page.hasMore && fresh.isNotEmpty()
                     val direction=recommendationFeedPendingDirection; recommendationFeedPendingDirection=0
-                    if(direction!=0 && fresh.isNotEmpty()) switchRecommendationFeed(direction)
+                    if(direction!=0 && fresh.isNotEmpty()) {
+                        if(direction<0) playRecommendationFeedItem(recommendationFeedItems.size-fresh.size)
+                        else switchRecommendationFeed(direction)
+                    }
                     else if(fresh.isEmpty()) {
                         recommendationFeedHasMore=false
                         playbackSpinner?.visibility=View.GONE
-                        Toast.makeText(this@MainActivity,"没有更多推荐了",Toast.LENGTH_SHORT).show()
+                        if(recommendationFeedMode) Toast.makeText(this@MainActivity,"没有更多推荐了",Toast.LENGTH_SHORT).show()
                     }
                 }
             } catch(problem: Exception) {
                 main.post {
-                    if(!recommendationFeedMode || session!=recommendationFeedSession) return@post
+                    val feedActive=recommendationFeedMode || recommendationReturnToPreview
+                    if(!feedActive || session!=recommendationFeedSession) return@post
                     if(identity!=cloudAccount.recommendationIdentity) {
-                        enterRecommendationFeed(fresh=true)
+                        if(recommendationFeedMode) enterRecommendationFeed(fresh=true)
+                        else { recommendationFeedPageJob=null; recommendationFeedHasMore=false }
                         return@post
                     }
-                    recommendationFeedPageJob=null; recommendationFeedHasMore=false
+                    recommendationFeedPageJob=null
                     recommendationFeedPendingDirection=0; playbackSpinner?.visibility=View.GONE
-                    Toast.makeText(this@MainActivity,"没有更多推荐了",Toast.LENGTH_SHORT).show()
+                    val exhausted=problem is com.hongguotv.core.NoNewRecommendationsException
+                    if(exhausted) recommendationFeedHasMore=false
+                    if(recommendationFeedMode) Toast.makeText(
+                        this@MainActivity,
+                        if(exhausted) "没有更多推荐了" else "加载更多推荐失败，请稍后重试",
+                        Toast.LENGTH_SHORT,
+                    ).show()
                 }
             }
         }
@@ -1082,18 +1099,18 @@ class MainActivity: Activity() {
     private fun switchRecommendationFeed(direction: Int): Boolean {
         if(!recommendationFeedMode || screen!="player" || recommendationFeedSwitching || recommendationFeedIndex<0) return false
         val target=recommendationFeedIndex+direction
-        if(target<0) {
-            Toast.makeText(this,"已经是第一条推荐",Toast.LENGTH_SHORT).show()
-            return false
-        }
-        if(target>=recommendationFeedItems.size) {
+        if(target !in recommendationFeedItems.indices) {
             if(recommendationFeedHasMore) {
                 recommendationFeedPendingDirection=direction; playbackSpinner?.visibility=View.VISIBLE
                 Toast.makeText(this,"正在加载更多推荐…",Toast.LENGTH_SHORT).show()
                 loadNextRecommendationFeedPage()
                 return true
             }
-            Toast.makeText(this,"已经是最后一条推荐",Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                if(direction<0) "已经是第一条推荐" else "已经是最后一条推荐",
+                Toast.LENGTH_SHORT,
+            ).show()
             return false
         }
         playRecommendationFeedItem(target)
@@ -1102,6 +1119,7 @@ class MainActivity: Activity() {
     private fun exitRecommendationFeed() {
         if(!recommendationFeedMode && screen!="feed") return
         recommendationFeedMode=false; recommendationFeedLoading=false
+        recommendationReturnToPreview=false
         cancelRecommendationFeedJobs()
         recommendationFeedItems=emptyList(); recommendationFeedIndex=-1
         recommendationFeedPage=0; recommendationFeedHasMore=false
@@ -3375,14 +3393,32 @@ class MainActivity: Activity() {
     private fun enterNormalPlaybackFromRecommendation() {
         if(!recommendationFeedMode || screen!="player") return
         recommendationFeedMode=false
+        recommendationReturnToPreview=true
         recommendationFeedSwitching=false
         recommendationFeedPendingDirection=0
-        cancelRecommendationFeedJobs()
+        // Keep the recommendation page/detail jobs alive: cancelling an in-flight
+        // next-page request would advance the server cursor without appending its
+        // items, and BACK must return to an intact feed.
+        cancelRecommendationStreamPrefetch()
         hideRecommendationInfo()
         setPlayerChannelFocusable(true)
         if(library.danmaku && danmakuOverlay!=null && danmakuJob?.isDone!=false) startDanmakuFetch()
         showPanel()
         syncMediaSession()
+    }
+    /** Restore the preview chrome for the feed item that is still playing. */
+    private fun returnToRecommendationPreview() {
+        val data=detail ?: run { exitRecommendationFeed(); return }
+        recommendationReturnToPreview=false
+        recommendationFeedMode=true
+        recommendationFeedLoading=false
+        recommendationFeedSwitching=false
+        recommendationFeedPendingDirection=0
+        playbackSpinner?.visibility=View.GONE
+        hidePlaybackOverlay()
+        showRecommendationInfo(data)
+        syncMediaSession()
+        prefetchRecommendationFeedItem(recommendationFeedIndex+1)
     }
     /** 弹幕开关（播放中即时生效：开=挂层+拉真实数据，关=卸层）。 */
     private fun toggleDanmakuInPlayer() {
@@ -3688,6 +3724,10 @@ class MainActivity: Activity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
     private fun returnToDetail() {
+        if(recommendationReturnToPreview && detail!=null && recommendationFeedItems.isNotEmpty()) {
+            returnToRecommendationPreview()
+            return
+        }
         if(recommendationFeedMode) { exitRecommendationFeed(); return }
         sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); invalidatePage(); releasePlayer()
         // Back from playback always lands on the episode detail page first
