@@ -612,7 +612,7 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 推荐预览返回 | PASS | Release《明末：我以毒士为子入残局》预览按 OK 进入正式播放，两次 BACK 后回到同名预览，顶部标签与底部片名/简介恢复；日志首帧 `episode=2 preloaded=false reused=false elapsedMs=5420`，未重新取流 |
 | 侧栏简介与分组 | PASS | Release 正常播放器按 MENU 打开侧栏，头部显示 3 行简介；分组标签横向平铺（`1-60`、`61-120` … `421-…`），不再压缩换行 |
 | 桌面长方形横幅 | PASS | S621 桌面卡片显示官方横向标识，副标题已移除；标识完整无裁切，左右留白均衡 |
-| HWC 视频层 | PASS | `dumpsys SurfaceFlinger` 显示 `SurfaceView[...](BLAST)` 为 `Comp Type=Device`，Buffer `YCRCB_420_SP`、`640x360`；首帧与自动连播日志正常 |
+| HWC 视频层 | PASS | `dumpsys SurfaceFlinger` 显示 `SurfaceView[...] (BLAST)` 为 `Comp Type=Device`，Buffer `YCRCB_420_SP`、`640x360`；首帧与自动连播日志正常 |
 | 截图限制 | NOTE | S621 的 `screencap` / `screenrecord` 不包含 HWC `SurfaceView` 视频层；同机 `1.1.20` Release A/B 截图同样为黑帧，不能据此判断播放黑屏 |
 | 稳定性 | PASS | 预览、正式播放、侧栏和返回链路无 `FATAL EXCEPTION` / `ANR` |
 | 完整干净门禁 | PASS | `clean :core:test :app:testDebugUnitTest :app:assembleRelease :app:bundleRelease :app:lintVitalRelease --no-build-cache` 通过；287 项测试、0 失败、0 错误、11 跳过 |
@@ -620,3 +620,17 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 覆盖安装 | PASS | S621 从 `1.1.20 / 10120` 覆盖安装 `1.1.21 / 10121` 成功，应用数据与登录态保留 |
 
 限制：S621 输入均为 ADB 注入；Release 只验证推荐预览返回、侧栏简介/分组、桌面横幅和稳定性，首尾自动续页的完整翻页证据来自同分支 Debug 实机（见上一节），未在 Release 重跑长列表；未覆盖数小时连续播放、弱网、其他 TV 型号。S621 截图不包含 HWC 视频层，视频出画由首帧日志、SurfaceFlinger 硬件层和自动连播状态共同确认，未用截图宣称视频画面通过。
+
+## 2026-11-24 v1.1.22 S621 低清与兜底片源黑屏（Debug 实机）
+
+根因是 S621 的低清网页兜底流仍进入 `SurfaceView` 的 HWC 路径；解码器和首帧状态正常，但视频输出为纯黑。修复按设备与已打开片源的真实参数选择视频视图：S621 的网页兜底流及面积不超过 `640×360` 的低清流使用 `TextureView`；高清流及其他设备仍使用 `SurfaceView`。换档只替换视频视图，保留播放器的弹幕、海报、进度和选集层。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 修复前基线 | FAIL | `1.1.21 / 10121` 的推荐页仅导航和片名可见，视频区域纯黑 |
+| 低清网页兜底 | PASS | 《明末：我以毒士为子入残局》第 2 集选择 `360P/640x360`，日志为 `Playback surface: TEXTURE_VIEW ... fallback=true`；ADB 截图显示真实剧集画面与字幕 |
+| 侧栏、恢复与切集 | PASS | MENU 侧栏后方持续出画；HOME 后恢复仍显示视频；下键切到第 3 集正常出画，无 `FATAL EXCEPTION`、`ANR` 或播放器线程错误 |
+| 高清路径 | PENDING | 继续验证 S621 高清片源仍为 `SURFACE_VIEW`，不回归为全量 `TextureView` |
+| 编译与单测 | PASS | `:app:testDebugUnitTest :app:assembleDebug` 通过；新增 S621 低清/兜底和其他机型路由测试 |
+
+限制：设备输入均为 ADB 注入，不是物理遥控器。低清 `TextureView` 可进入系统截图，因此本节截图能直接证明视频出画；高清 `SurfaceView` 黑截图仍不能单独作为黑屏证据。正式包的完整门禁、签名、安装与最终回归结果将在发布前补记。
