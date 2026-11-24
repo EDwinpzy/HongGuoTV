@@ -185,8 +185,9 @@ internal class StreamScheduler(private val sources: List<StreamSource>) {
                 // 10s MP4, ends normally, and NEVER raises an error - "this episode
                 // only plays 10 seconds". Upstream has no public fallback at all, so
                 // its empty answers stay on the signed path and get retried. Keep the
-                // website channel for the legacy stream() path only.
-                if (source.name == "public-mp4") continue
+                // The verified full public stream becomes the last resort only
+                // after the signed identity refresh has been exhausted.
+                if (source.name == "public-mp4" && refreshes == 0) continue
                 try {
                     val tiers = source.ladder(
                         id,
@@ -198,7 +199,10 @@ internal class StreamScheduler(private val sources: List<StreamSource>) {
                     )
                     if (tiers.isNotEmpty()) return tiers
                 } catch (e: IOException) {
-                    if (e is PlaybackSourceUnavailableException) {
+                    if (source.name == "public-mp4") {
+                        // The public URL is an opportunistic last resort, not proof
+                        // that the signed channels have a deterministic failure.
+                    } else if (e is PlaybackSourceUnavailableException) {
                         deterministic = e
                         lastRecoverable = false
                     } else {

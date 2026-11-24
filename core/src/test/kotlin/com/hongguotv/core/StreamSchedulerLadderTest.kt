@@ -11,9 +11,7 @@ import java.net.SocketTimeoutException
  * 2026-11-14 regression: the capability-first ladder must retry sporadic empty
  * answers AND risk-control rejections (code 110001) on the signed channel with a
  * FRESH device identity, must return to the PRIMARY channel after a refresh, and
- * must NEVER fall through to the website's 360p channel (which serves a 10-second
- * preview clip that looks like "the episode only plays 10s" because the player
- * ends normally).
+ * may use a verified full public MP4 only after the signed retries are exhausted.
  */
 class StreamSchedulerLadderTest {
     private class ScriptedSource(
@@ -64,15 +62,30 @@ class StreamSchedulerLadderTest {
     }
 
     @Test
-    fun neverServesWebsitePreviewWhenSignedChannelStaysEmpty() {
+    fun previewRejectionDoesNotBecomeAPlayableTier() {
         val signed = ScriptedSource("app-api", MutableList(2) { { throw AppApiEmptyResponseException() } })
-        val website = ScriptedSource("public-mp4", mutableListOf({ listOf(preview) }))
+        val website = ScriptedSource("public-mp4", mutableListOf({ throw IOException("网站公开片源仅为试看片段") }))
         val error = runCatching { StreamScheduler(listOf(signed, website)).ladder("123", 1080, ContentType.SHORT) }.exceptionOrNull()
         assertTrue("expected IOException, got $error", error is IOException)
         assertTrue(error is PlaybackSourceUnavailableException)
         assertEquals(2, signed.calls)
         assertEquals(1, signed.refreshes)
-        assertEquals(0, website.calls) // the 10s clip must never reach the player
+        assertEquals(1, website.calls)
+    }
+
+    @Test
+    fun exhaustedSignedChannelsUseVerifiedFullPublicFallback() {
+        val signed = ScriptedSource("app-api", MutableList(2) { { throw AppApiEmptyResponseException() } })
+        val protectedWeb = ScriptedSource("web-fallback", MutableList(2) {
+            { throw PlaybackSourceUnavailableException("网页完整片源 HTTP 403") }
+        })
+        val fullPublic = StreamInfo("https://site/video/public/123/360p.mp4", null, "360P", isFallback = true)
+        val public = ScriptedSource("public-mp4", mutableListOf({ listOf(fullPublic) }))
+        val tiers = StreamScheduler(listOf(signed, protectedWeb, public)).ladder("123", 1080, ContentType.SHORT)
+        assertEquals(listOf(fullPublic), tiers)
+        assertEquals(2, signed.calls)
+        assertEquals(1, signed.refreshes)
+        assertEquals(1, public.calls)
     }
 
     @Test
