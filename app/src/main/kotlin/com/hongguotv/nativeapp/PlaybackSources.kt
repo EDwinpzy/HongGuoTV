@@ -51,17 +51,14 @@ internal data class PlaybackAttempt(val tier: StreamInfo,val forced: Boolean)
 
 internal enum class PlaybackSurfaceKind { SURFACE_VIEW, TEXTURE_VIEW }
 
-internal fun playbackSurfaceKind(
-    model: String,
-    fallback: Boolean,
-    width: Int?,
-    height: Int?,
-): PlaybackSurfaceKind {
-    val smallSource=width!=null && height!=null && width>0 && height>0 &&
-        width.toLong()*height<=640L*360L
-    return if(model.trim().equals("S621",ignoreCase=true) && (fallback || smallSource))
+/**
+ * S621's vendor HWC path reports `hwc overlay number exceed limit` and presents
+ * black HEVC frames while audio continues. TextureView renders visibly and was
+ * measured at 1.43% janky frames in 1080P/30fps on the affected box.
+ */
+internal fun playbackSurfaceKind(model: String): PlaybackSurfaceKind =
+    if(model.trim().equals("S621",ignoreCase=true))
         PlaybackSurfaceKind.TEXTURE_VIEW else PlaybackSurfaceKind.SURFACE_VIEW
-}
 
 internal fun formatSourceBitrate(bitsPerSecond: Long): String =
     if (bitsPerSecond >= 1_000_000) {

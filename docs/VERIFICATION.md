@@ -648,3 +648,26 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 核心回归与 Debug 构建 | PASS | `:core:test :app:assembleDebug` 通过 |
 
 限制：设备输入均为 ADB 注入，不是物理遥控器；本轮公开完整 MP4 的实际回退路径由单测覆盖，原集后来恢复了正式 1080P，未伪称实机命中公开回退。上游空响应与网页 403 仍可能发生。
+
+## 2026-11-25 V5 设备信封与 S621 黑屏修复（Debug 实机）
+
+验证分支为 `codex/source-unavailable-1125`，基于 `v1.1.23 / 95cb473`。S621 覆盖安装同签名 Debug `1.1.23 / 10123`，应用数据与登录态保留；设备输入均为 ADB 注入，不是物理遥控器。
+
+根因有两层：
+
+- 《抱歉，又夺魁了》第 4 集 `7703467407741832216` 的 `mobile-v5`、`multi-video-model`、`app-api` 均返回 HTTP 200 + 0 字节，网页完整片源 HTTP 403，公开 MP4 HTTP 404。客户端因此显示 `source-unavailable`，并非 ExoPlayer 等待超时。
+- 上游 0.16.15 / PR #122 的受控 A/B 表明，Medusa V5 的设备信封只有 14 个字段时会被服务端静默丢弃。补齐到字段 38 的 36 个设备字段、进程令牌、计数器块和 flags 后，同一 `7.4.5.32 / 74532` 请求恢复返回模型。本仓库只移植该签名修复，不引入账号设备替换或原生 SDK。
+- 片源恢复后发现 S621 的 `SurfaceView` HWC 路径持续报 `hwc overlay number exceed limit`，解码器和首帧日志正常但用户只听到声音。S621 改为一律使用 `TextureView` 后画面可见；1080P/30fps 的 30 秒 `gfxinfo` 为 906 帧、13 帧 janky（1.43%）、p90 9ms。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 失败基线 | FAIL | `1.1.23` 在 S621 点“立即重试”仍约 5 秒进入 `source-unavailable`；日志无 `Playback ladder`，确认失败发生在取流阶段 |
+| 上游逐通道复现 | FAIL | 修复前同一集 `mobile-v5` / `multi-video-model` / `app-api` 为 `HTTP 200 / 0B`，网页 403，公开 MP4 404；相邻集同时为空 |
+| 签名信封回归 | PASS（单测） | `SignerV5EnvelopeTest` 使用上游 PR #122 的合成 wire fixture，逐字节校验最终 URL、headers、body 和 `x-medusa` |
+| 目标集取流 | PASS | 修复后第 4 集返回 `1080P/720P/576P/480P/360P` 五档 `h265`；首段媒体 `HTTP 206`、`131072` 字节 |
+| 目标集首帧 | PASS | S621 最终 Debug 包切换第 4 集：`Playback selected: 1080P/h265/1920x1080`，`Playback first frame episode=4 ... elapsedMs=1700`，无 `source-unavailable` |
+| 黑屏对照 | FAIL → PASS | HWC `SurfaceView` 截图/实拍仅字幕与弹幕，系统日志持续 `hwc overlay number exceed limit`；改用 `TextureView` 后 1080P/30fps 截图显示真实剧集画面和字幕 |
+| 帧节奏 | PASS | 1080P/30fps `TextureView` 连续 30 秒：906 帧、13 帧 janky（1.43%）、p50 5ms、p90 9ms、p99 16ms、Missed Vsync 0 |
+| 编译与单测 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过 |
+
+限制：本轮只安装 Debug 包，未生成或发布 Release，未运行 `lintVitalRelease`。ADB 输入、截图和 `gfxinfo` 仍不能替代投影幕布的人工长时间观察；未覆盖数小时连播、弱网、其他 TV 型号。网页完整片源对本集仍返回 403，但签名通道已恢复，不影响播放。
