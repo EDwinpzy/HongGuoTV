@@ -12,6 +12,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MobilePlaybackStreamSourceTest {
@@ -127,6 +128,66 @@ class MobilePlaybackStreamSourceTest {
         assertEquals("https://cdn.example/hevc.mp4", tiers.single().url)
         assertEquals(2, requests.size)
         assertEquals("vas.example.org", requests[1].url.host)
+    }
+
+    @Test
+    fun bytevc2FallbackUsesThePlaybackRequestBudget() {
+        val fallbackTimeoutsMs = mutableListOf<Long>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val body = when (request.url.encodedPath) {
+                "/novel/player/multi_video_model/preload/v1" ->
+                    JSONObject()
+                        .put("code", 0)
+                        .put(
+                            "data",
+                            JSONObject().put(
+                                "1004",
+                                JSONObject().put(
+                                    episode,
+                                    JSONObject().put(
+                                        "video_model",
+                                        model("https://cdn.example/unsupported", "bytevc2")
+                                            .put(
+                                                "fallback_api",
+                                                JSONObject().put(
+                                                    "fallback_api",
+                                                    "https://vas.example.org/video/fplay?codec_type=4",
+                                                ),
+                                            ),
+                                    ),
+                                ),
+                            ),
+                        )
+                        .toString()
+                "/video/fplay" -> {
+                    fallbackTimeoutsMs += chain.call().timeout().timeoutNanos() / 1_000_000
+                    JSONObject()
+                        .put(
+                            "video_info",
+                            JSONObject().put(
+                                "data",
+                                model("https://cdn.example/hevc.mp4", "h265"),
+                            ),
+                        )
+                        .toString()
+                }
+                else -> error("unexpected request ${request.url}")
+            }
+            response(request, body)
+        }.build()
+        val source = MobilePlaybackStreamSource(http, session, { now }, signer)
+
+        val tiers = PlaybackRequestBudget.run(1_500L) {
+            source.ladder(episode, 1080, ContentType.SHORT)
+        }
+
+        assertEquals("h265", tiers.single().codec)
+        assertEquals(1, fallbackTimeoutsMs.size)
+        assertTrue(
+            "fallback timeout ${fallbackTimeoutsMs.single()}ms exceeds the request budget",
+            fallbackTimeoutsMs.single() in 1..1_500,
+        )
     }
 
     @Test

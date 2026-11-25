@@ -238,7 +238,7 @@ internal class MobilePlaybackStreamSource(
                 .get()
                 .build()
             val compatible = try {
-                RequestScope.execute(transport.newCall(request)) { response ->
+                RequestScope.execute(PlaybackRouteTransport.call(transport, request)) { response ->
                     if (!response.isSuccessful) return@execute emptyList()
                     val root = json(readLimited(response, "片源兼容接口"))
                     val data = root.optJSONObject("video_info")?.optJSONObject("data")
