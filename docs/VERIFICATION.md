@@ -648,3 +648,20 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 核心回归与 Debug 构建 | PASS | `:core:test :app:assembleDebug` 通过 |
 
 限制：设备输入均为 ADB 注入，不是物理遥控器；本轮公开完整 MP4 的实际回退路径由单测覆盖，原集后来恢复了正式 1080P，未伪称实机命中公开回退。上游空响应与网页 403 仍可能发生。
+
+## 2026-11-25 ByteVC2 兼容请求超时修复（Debug 实机/部分）
+
+版本为 `1.1.23 / 10123` 的 Debug 构建，覆盖安装到 S621，应用数据保留；设备输入均为 ADB 注入，不是物理遥控器。测试期间曾临时安装 ADB Keyboard 输入中文，结束后已恢复系统拼音输入法并卸载该测试键盘。
+
+根因：仅有 ByteVC2 档位时，`fallback_api` 的 `codec_type=1/3` 兼容请求没有走统一播放预算，单次可一直使用 OkHttp 的 45 秒总超时，两次尝试会把“播放超时”放大到约 90 秒。修复把兼容请求接入 `PlaybackRouteTransport`，单请求最多 8 秒且不超过播放取流的剩余总预算，并纳入统一取消。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 兼容请求预算回归 | PASS（单测） | `MobilePlaybackStreamSourceTest.bytevc2FallbackUsesThePlaybackRequestBudget` 在外层 1.5 秒预算下断言兼容请求超时不超过 1.5 秒 |
+| 模块编译与 Debug 包 | PASS | `:core:test --tests "com.hongguotv.core.MobilePlaybackStreamSourceTest"`、`:core:compileKotlin`、`:app:compileDebugKotlin`、`:app:assembleDebug` 通过 |
+| S621 覆盖安装 | PASS | 同一 applicationId 和签名覆盖安装 `1.1.23 / 10123` Debug 成功，应用数据保留 |
+| 目标第 6 集 | BLOCKED | 《硬核求生恋爱指南》第 6 集 `7708197063116196888` 两次冷启动均在约 10.3 秒结束；移动端主接口与 `video_tab` 均 HTTP 200 / 0 字节，旧 App 通道空响应，网页完整片源 HTTP 403，公开 MP4 HTTP 404，未进入 `fallback_api` |
+| 相邻第 5 集联网探针 | BLOCKED | `7708197061132307480` 的 `mobile-v5` 与 `multi-video-model` 同样全部 HTTP 200 / 0 字节，排除单集路径错误 |
+| 普通剧集回归 | PASS | 《红楼，缉恶成圣2》第 1 集通过网页完整片源 `360P/640x360` 起播，首帧 `elapsedMs=9298`，截图显示真实画面与字幕，无 `FATAL EXCEPTION` / `ANR` |
+
+限制：本轮没有在 S621 上命中“非空 ByteVC2 模型 → `fallback_api` → HEVC 兼容档位”的实际链路，因为当前匿名播放身份对目标剧集的签名接口整体返回空正文；该路径的超时上限由单测确定性覆盖，未用实机结果冒充。`1.1.23` Release、完整发布门禁和签名产物未在本轮重跑。
