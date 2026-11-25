@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -92,5 +93,46 @@ class PlaybackDeviceSessionTest {
         } finally {
             Thread.interrupted()
         }
+    }
+
+    /**
+     * 2026-11-24: the anonymous device pool is throttled to HTTP 200 + 0 bytes. A
+     * signed-in user presents the account-bound device instead. It must be presented
+     * as-is, must survive the scheduler's identity refresh (rotating away would
+     * return to the throttled pool), and must be dropped on logout.
+     */
+    @Test
+    fun trustedAccountDeviceReplacesTheAnonymousIdentityAndIsNeverRotated() {
+        val calls = AtomicInteger()
+        val session = PlaybackDeviceSession {
+            calls.incrementAndGet()
+            DeviceRegister.Registered("333", "444")
+        }
+        session.trustAccountDevice("1905892595378490", "1905892595382586")
+        val identity = session.profile(http)
+        assertEquals("1905892595378490", identity.values["device_id"])
+        assertEquals("1905892595382586", identity.values["iid"])
+        assertEquals("", identity.cookie) // account cookies never enter the playback chain
+        assertEquals(0, calls.get()) // no anonymous registration is spent
+
+        assertFalse(session.playbackRotate(http))
+        assertEquals(0, calls.get())
+        val after = session.profile(http)
+        assertEquals("1905892595378490", after.values["device_id"])
+
+        session.forgetAccountDevice()
+        assertNull(session.trustedIdentity())
+        val anonymous = session.profile(http)
+        assertEquals("333", anonymous.values["device_id"])
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun trustedAccountDeviceRejectsMalformedIds() {
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+        session.trustAccountDevice("", "")
+        session.trustAccountDevice("0", "1905892595382586")
+        assertNull(session.trustedIdentity())
+        assertEquals("333", session.profile(http).values["device_id"])
     }
 }

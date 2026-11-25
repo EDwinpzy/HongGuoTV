@@ -194,6 +194,32 @@ class AccountController(
 
     internal fun recommendationCredentials() = credentials?.takeIf { profile != null }
 
+    /**
+     * The playback gate answers the anonymous device pool with HTTP 200 + 0 bytes
+     * (2026-11-24 event) while the same device, network and signature still serve
+     * every account endpoint. A signed-in user therefore presents the device the
+     * account is actually bound to instead of a throwaway anonymous registration -
+     * one durable identity that the server has already seen through a login.
+     * This is necessary but NOT sufficient on its own: the upstream throttle also
+     * has time windows where playback answers empty regardless of identity. Logout
+     * returns playback to an anonymous registration.
+     */
+    private fun syncPlaybackIdentity() {
+        val account = credentials
+        if (account == null) {
+            PlaybackDeviceSession.shared.forgetAccountDevice()
+            android.util.Log.d("HongguoAccount", "playback identity: anonymous (signed out)")
+        } else {
+            PlaybackDeviceSession.shared.trustAccountDevice(account.deviceId, account.installId)
+            // Never log the ids themselves - only whether a trusted identity is active.
+            android.util.Log.d(
+                "HongguoAccount",
+                "playback identity: trusted=${PlaybackDeviceSession.shared.hasTrustedAccountDevice()} " +
+                    "hasDevice=${account.deviceId.isNotBlank() && account.installId.isNotBlank()}",
+            )
+        }
+    }
+
     internal val recommendationLoading
         get() = !accountRestored || (credentials != null && profile == null && busy)
 
@@ -452,6 +478,7 @@ class AccountController(
                 accountRestored = true
                 accountRestoreFailed = saved.isFailure
                 credentials = saved.getOrNull()
+                syncPlaybackIdentity()
                 status =
                     if (credentials != null) "登录态已恢复，正在自动同步云端记录"
                     else if (saved.isFailure) "登录态无法读取，请重新登录" else "未登录"
@@ -892,6 +919,7 @@ class AccountController(
         accountRestored = true
         accountRestoreFailed = false
         credentials = next
+        syncPlaybackIdentity()
         profile = account
         history = emptyList()
         historyLoaded = false
@@ -1433,6 +1461,7 @@ class AccountController(
         generation++
         busy = false
         credentials = null
+        syncPlaybackIdentity()
         profile = null
         history = emptyList()
         historyLoaded = false

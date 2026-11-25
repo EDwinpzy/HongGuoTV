@@ -49,12 +49,50 @@ class PlaybackDeviceSession(
     private var cdid = UUID.randomUUID().toString()
     private var ready: Profile? = null
 
+    /**
+     * 2026-11-24 事件：匿名注册的设备池整体被限流（HTTP 200 + 0 字节），而同一台
+     * 设备、同一网络出口上的账号接口全部正常。登录后把账号绑定的设备身份交给本会话，
+     * 全部播放通道自动改用它（这是一台服务端已经在登录流程里见过的设备，而不是一次
+     * 性的匿名注册）；退出登录清除后回落匿名注册。注意这是必要条件而非充分条件：
+     * 上游限流存在与身份无关的时间窗口，那段窗口里任何身份的播放请求都是空的。
+     */
+    @Volatile private var trusted: TrustedIdentity? = null
+
+    /** 账号登录时绑定的设备身份（[AccountCredentials.deviceId] / [AccountCredentials.installId]）。 */
+    internal data class TrustedIdentity(val deviceId: String, val installId: String)
+
+    /** 登录后调用；设备身份无效时保持现状。 */
+    @Synchronized
+    fun trustAccountDevice(deviceId: String, installId: String) {
+        if (!validId.matches(deviceId) || !validId.matches(installId)) return
+        if (trusted?.deviceId == deviceId && trusted?.installId == installId) return
+        trusted = TrustedIdentity(deviceId, installId)
+        // The anonymous identity is no longer what playback should present.
+        ready = null
+    }
+
+    /** 退出登录后调用：播放回到匿名注册设备。 */
+    @Synchronized
+    fun forgetAccountDevice() {
+        if (trusted == null) return
+        trusted = null
+        ready = null
+    }
+
+    /** True while playback presents the account-bound device instead of an anonymous one. */
+    fun hasTrustedAccountDevice(): Boolean = trusted != null
+
+    /** The identity playback presents right now (null before the first request). */
+    @Synchronized
+    internal fun trustedIdentity(): TrustedIdentity? = trusted
+
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
         ready?.let {
             return it
         }
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
+        trusted?.let { return toProfile(it).also { ready = it } }
         return toProfile(registerDevice(http)).also { ready = it }
     }
 
@@ -95,8 +133,26 @@ class PlaybackDeviceSession(
         return true
     }
 
-    /** Playback uses the anonymous registered identity, so it is always rotatable. */
-    internal fun playbackRotate(http: OkHttpClient): Boolean = rotate(http)
+    /**
+     * Playback uses the anonymous registered identity, so it is always rotatable -
+     * EXCEPT while an account device is trusted: that identity is the one the
+     * server serves, and rotating away from it would return to the throttled pool.
+     */
+    internal fun playbackRotate(http: OkHttpClient): Boolean {
+        if (trusted != null) return false
+        return rotate(http)
+    }
+
+    private fun toProfile(identity: TrustedIdentity): Profile =
+        Profile(
+            VendorConstants.device +
+                mapOf(
+                    "device_id" to identity.deviceId,
+                    "iid" to identity.installId,
+                    "cdid" to cdid,
+                ),
+            "",
+        )
 
     private fun registerDevice(http: OkHttpClient): DeviceRegister.Registered {
         val device =

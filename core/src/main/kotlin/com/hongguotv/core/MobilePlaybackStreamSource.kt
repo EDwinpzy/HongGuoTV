@@ -38,11 +38,14 @@ internal class MobilePlaybackStreamSource(
 ) : StreamSource {
     override val name = "mobile-v5"
 
-    /** Current App/SDK requests are accepted with the platform HTTP agent. */
+    /**
+     * The App playback gate is a client fingerprint check, so the request presents
+     * the official player agent like every other signed channel. Forwarding the
+     * platform agent (`System.getProperty("http.agent")` = Dalvik on Android) made
+     * this the only channel identifying itself as a generic runtime.
+     */
     private val playbackUa: String
-        get() = System.getProperty("http.agent")
-            ?.takeIf { it.isNotBlank() }
-            ?: "okhttp/4.12.0"
+        get() = VendorConstants.VIDEO_UA
 
     override fun stream(
         id: String,

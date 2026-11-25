@@ -665,3 +665,54 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 普通剧集回归 | PASS | 《红楼，缉恶成圣2》第 1 集通过网页完整片源 `360P/640x360` 起播，首帧 `elapsedMs=9298`，截图显示真实画面与字幕，无 `FATAL EXCEPTION` / `ANR` |
 
 限制：本轮没有在 S621 上命中“非空 ByteVC2 模型 → `fallback_api` → HEVC 兼容档位”的实际链路，因为当前匿名播放身份对目标剧集的签名接口整体返回空正文；该路径的超时上限由单测确定性覆盖，未用实机结果冒充。`1.1.23` Release、完整发布门禁和签名产物未在本轮重跑。
+
+## 2026-11-25 空响应根因定位与账号设备取流（Release 实机/部分）
+
+版本为 `1.1.23 / 10123` 的 Release 构建（R8 混淆），同签名覆盖安装到 S621，登录态与应用数据保留；设备输入均为 ADB 注入，不是物理遥控器。本轮先做对照实验定位根因，再改代码。
+
+### 对照实验（均在同一台 S621、同一网络出口、同一时段）
+
+| 实验 | 变量 | 结果 |
+| --- | --- | --- |
+| 账号接口基线 | 每约 90 秒一次 | `/reading/user/info`、`read_history/list`、`bookshelf/video/info` 全部成功（`history=498 favorites=25`），持续整轮 |
+| 播放基线 | 匿名注册设备 + v5 三头 | 目标第 6 集 `7708197063116196888` 五个通道全部失败（`mobile-v5` / `multi-video-model` / `app-api` 均 HTTP 200 / 0 字节，网页 403，公开 MP4 404） |
+| 换设备身份 | 登录所用的固定 `device_id`/`iid`，无 Cookie | 仍 HTTP 200 / 0 字节 |
+| 换签名方式 | 完整六头（gorgon+ladon+argus） | 仍 HTTP 200 / 0 字节 |
+| 换签名库 | `PlayerSigner`（推荐流在用的 ladon+argus） | 仍 HTTP 200 / 0 字节 |
+| 换端点参数 | 参考项目 `player/v1` + `dr_scene=player` + `device_level=4` + `74332` | 仍 HTTP 200 / 0 字节 |
+| 换 User-Agent | Dalvik / 官方 `VIDEO_UA` / okhttp | 三者均 HTTP 200 / 0 字节 |
+| 换 `cdid` | 会话随机 / 全零固定值 | 均无差别 |
+
+结论：**播放空响应与设备身份、签名方式、签名库、端点参数、UA、`cdid` 均无关**，且账号接口在同一出口持续正常，排除 IP 封禁和单集问题。被限流的是服务端的匿名播放通道本身。
+
+### 一次未被复现的成功窗口
+
+18:33:37 的探针中，同一设备连续 5 个播放请求返回 `15945–16021B` 的完整模型；18:41 Debug 包真实播放《红楼，缉恶成圣2》第 3 集取得 5 档 `bytevc1`（`720P/540P/480P/360P` + `360P/h264`），首帧 `elapsedMs=3996`，第 4 集自动连播首帧 `elapsedMs=1615`，截图确认 720P 画面、弹幕与字幕正常。
+
+但 18:50 之后，**同一请求、同一身份、同一构造方式**连续 6 轮 × 2 变体（间隔 7 秒，持续 36 秒）全部回到 HTTP 200 / 0 字节。其中 `M5` 变体逐字节复刻了 18:33 成功的请求构造，结果仍为空。
+
+因此该窗口**不能**作为“账号设备身份可解锁播放”的证据——它是上游限流的时间窗口，不是客户端可控参数。本轮据此**撤回**早期“换账号设备即可修复”的结论，不把它写成已验证的修复。
+
+### 保留的改动
+
+| 改动 | 依据 |
+| --- | --- |
+| `PlaybackDeviceSession.trustAccountDevice` / `forgetAccountDevice` | 登录后让播放链路呈现账号绑定的设备（服务端在登录流程里已见过的设备），而不是一次性匿名注册；账号设备下不再触发身份轮换（轮换只会退回被限流的匿名池）；退出登录回落匿名注册 |
+| `MobilePlaybackStreamSource` 使用官方 `VIDEO_UA` | 不再把 Android 平台代理（Dalvik）作为唯一自报为通用运行时的通道；该变更**不单独解决**空响应 |
+
+### 本轮验证
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 会话身份回归 | PASS（单测） | `PlaybackDeviceSessionTest.trustedAccountDeviceReplacesTheAnonymousIdentityAndIsNeverRotated`、`trustedAccountDeviceRejectsMalformedIds`，共 7 项通过 |
+| 完整门禁 | PASS | `:core:test :app:assembleRelease :app:lintVitalRelease` 通过（3 分 28 秒） |
+| Release 覆盖安装 | PASS | 同签名覆盖安装 `1.1.23 / 10123` Release 成功，登录态保留，无 `FATAL EXCEPTION` |
+| Release 身份生效 | PASS | 日志确认 `playback identity: trusted=true hasDevice=true`，播放链路呈现账号设备（`deviceLen=15 hasCookie=false`） |
+| Release 真实播放 | PARTIAL | 《诶？差点真分了》第 1 集通过网页完整片源 `360P/640x360` 起播，首帧 `elapsedMs=8120`；签名通道在本时段为空 |
+| 目标第 6 集 | BLOCKED | 本时段签名通道空响应，网页 403、公开 MP4 404，界面显示 `source-unavailable` |
+
+### 未解决与风险
+
+- 上游空响应是**服务端按时间窗口动态生效**的匿名限流，客户端无法绕过。本轮的改动在放行窗口内生效（18:41 实测多档清晰度），在收紧窗口内与改动前表现一致（回落网页 360P）。
+- 参考项目 `waligoraamodio288-rgb/hongguo-desktop-releases` 的做法是执行官方 `libmetasec_ml.so`（mssdk `v04.10.03`）生成 V5 签名，需要 Unicorn 模拟执行 + 两步 `/sdi/get_token` 会话；但其 issue #1488/#1490/#1493 在 11-24/11-25 同样报 `upstream-empty`，说明该方案也不免疫本次限流。
+- 本轮未实现 V5 SDK 签名通道；该方案复杂度高且有效性未经本次事件验证，未贸然引入。
