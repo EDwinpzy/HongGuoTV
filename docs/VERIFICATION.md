@@ -686,3 +686,20 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 回归 | PASS | `:core:test` 271/271、`:app:testDebugUnitTest` 30/30、`:app:lintVitalRelease`、`:app:compileReleaseKotlin` 通过 |
 
 限制：本轮未做 S621 实机验证，未测弱网/长时间连播；`assembleRelease` 因验证 worktree 无 `.keys/` 签名材料未运行。对冲在首路健康时零额外请求，但首路慢于 1.2s 时会多发 1–2 个 GET，对每身份请求配额的影响需实机观察。
+
+## 2026-11-26 v1.1.24 S621 投影仪实机冒烟（Release 签名包）
+
+`v1.1.24 / 10124`（PR #29 合并后首个版本号）覆盖安装 JMGO S621，同签名覆盖、登录态与观看记录保留。设备输入均为 ADB 注入，不是物理遥控器。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 签名与版本 | PASS | `aapt2` 读取 `versionCode=10124 / versionName=1.1.24`；`apksigner` 显示 v2 签名、证书 SHA-256 `403BDDBE...13A5`，与已发布 `v1.1.23` 完全一致，`install -r` 返回 Success |
+| 完整门禁 | PASS | `:core:test`、`:app:testDebugUnitTest`、`:app:lintVitalRelease`、`:app:assembleRelease` 一次通过 |
+| 冷启动与首页 | PASS | `Home displayed cached=true elapsedMs=823`；截图显示导航栏、`接着看` / `短剧` 货架与封面正常，无 FATAL EXCEPTION、ANR |
+| 首集起播 | PASS | 第 1 集取到 `720P/bytevc1/1280x720`，`Playback first frame episode=1 elapsedMs=4255`；截图确认剧集画面与字幕出画 |
+| 并行档位探测生效 | PASS | 日志 `Playback trying` 顺序交错（如 `720P → 540P → 480P → 360P`）而非串行，说明 PR #29 的多档并行探测在实机路径上真实生效 |
+| 预取与切集 | PASS | 第 2 集命中预取复用，`first frame episode=2 preloaded=true reused=true elapsedMs=213`；第 4 集重新取流 `1080P/1920x1080`，`first frame episode=4 elapsedMs=2178`，截图确认 1080P 画面 |
+| 弹幕分页 | PASS | `Danmaku window=0s ... cursor=true more=true` 随播放推进到 `window=120s items=1 next=240s` |
+| 异常扫描 | PASS | 全量 logcat 无 `FATAL EXCEPTION`、`ANR in`、`source-unavailable`、`ExoPlaybackException`、`hwc overlay number exceed limit` |
+
+限制：设备输入与截图均来自 ADB 注入，不能替代投影幕布上的人工长时间观察；未覆盖弱网、长时间连播、数小时播放和其他 TV 型号；对冲在首路健康时零额外请求，慢于 1.2s 时会多发 1–2 个 GET，对每身份请求配额的长期影响未实测。
