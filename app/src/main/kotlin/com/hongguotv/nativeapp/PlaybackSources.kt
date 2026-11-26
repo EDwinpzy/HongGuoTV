@@ -4,6 +4,7 @@ package com.hongguotv.nativeapp
 import android.util.Log
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.ContentType
+import com.hongguotv.core.PlaybackBudget
 import com.hongguotv.core.PlaybackSourceUnavailableException
 import com.hongguotv.core.RemoteVideo
 import com.hongguotv.core.StreamInfo
@@ -136,6 +137,35 @@ internal fun openStream(
     learnedFailure: (StreamInfo) -> Boolean = { false },
     retryLearned: Boolean = false,
     seriesId: String = "",
+): OpenedStream? = PlaybackBudget.run(if (speculative) SPECULATIVE_TOTAL_MS else FOREGROUND_TOTAL_MS) {
+    openStreamWithinBudget(
+        http, repository, id, maxQuality, type, supportsTier, metadataAhead, speculative,
+        supportsTrack, learnedFailure, retryLearned, seriesId,
+    )
+}
+
+/**
+ * Foreground budget for ONE episode switch: the ladder read plus the parallel
+ * header probes. Before this cap the ladder had 10s and every header probe its
+ * own 12s on top, so a dead CDN edge could hold a switch for 30s+ with no
+ * overall limit. 18s = 10s ladder + 8s for the slowest single header probe.
+ */
+private const val FOREGROUND_TOTAL_MS = 18_000L
+private const val SPECULATIVE_TOTAL_MS = 10_000L
+
+private fun openStreamWithinBudget(
+    http: OkHttpClient,
+    repository: ContentRepository,
+    id: String,
+    maxQuality: Int,
+    type: ContentType,
+    supportsTier: (StreamInfo) -> Boolean,
+    metadataAhead: List<String> = emptyList(),
+    speculative: Boolean = false,
+    supportsTrack: (VideoTracks.Track?) -> Boolean,
+    learnedFailure: (StreamInfo) -> Boolean = { false },
+    retryLearned: Boolean,
+    seriesId: String = "",
 ): OpenedStream? {
     val ladder = repository.playbackTiers(
         id,
@@ -169,46 +199,63 @@ internal fun openStream(
     )
     var primaryError: Exception? = null
     var primaryDeterministic: PlaybackSourceUnavailableException? = null
-    for ((tier,forced) in primaryOrder) {
+    // Probe every primary candidate's MP4 header at once instead of one after
+    // another: each probe is an independent CDN read (up to 12s on a dead edge),
+    // and a serial walk made the user wait for the SUM. The winner is still the
+    // highest-priority candidate that decoded, so the selection is unchanged -
+    // only the wait collapses to the slowest single probe.
+    val probed = probeTiers(primaryOrder) { tier ->
         val video = RemoteVideo(http, tier)
         try {
-            Log.i(
-                "HongguoTV",
-                "Playback trying: ${tier.quality}/${tier.codec}/${tier.width}x${tier.height}" +
-                    if (forced) " (best effort)" else "",
-            )
-            video.prepare()
-            val track = video.trackInfo()
-            Log.i(
-                "HongguoTV",
-                "Playback track: ${track?.fourcc}/${track?.width}x${track?.height} " +
-                    "supported=${supportsTrack(track)}",
-            )
-            // A requested primary tier gets one real ExoPlayer attempt even when the
-            // static probe rejects its portrait geometry. Learned runtime failures are
-            // excluded above, so this cannot loop on a tier the box already proved bad.
-            if (forced || supportsTrack(track)) {
-                Log.i(
-                    "HongguoTV",
-                    "Playback selected: ${tier.quality}/${tier.codec}/${track?.width}x${track?.height}" +
-                        "/${tier.bitrate}bps" +
-                        if (forced) " (forced best effort)" else "",
-                )
-                return OpenedStream(video, tier, ladder, track)
-            }
-            Log.i(
-                "HongguoTV",
-                "Skipped ${tier.quality} ${tier.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
-            )
-            video.close()
+            TierProbe.Opened(video, video.prepare().trackInfo())
         } catch (error: Exception) {
             video.close()
-            if(cancelledPlayback(error)) throw error
-            if (error is PlaybackSourceUnavailableException) primaryDeterministic = error
-            else primaryError = error
-            Log.w("HongguoTV", "Playback tier failed: ${tier.quality}/${tier.codec}: ${error.message}")
+            TierProbe.Failed(error)
         }
     }
+    for ((tier, forced) in primaryOrder) {
+        val outcome = probed[tier] ?: continue
+        when (outcome) {
+            is TierProbe.Opened -> {
+                val track = outcome.track
+                Log.i(
+                    "HongguoTV",
+                    "Playback track: ${track?.fourcc}/${track?.width}x${track?.height} " +
+                        "supported=${supportsTrack(track)}",
+                )
+                // A requested primary tier gets one real ExoPlayer attempt even when the
+                // static probe rejects its portrait geometry. Learned runtime failures are
+                // excluded above, so this cannot loop on a tier the box already proved bad.
+                if (forced || supportsTrack(track)) {
+                    Log.i(
+                        "HongguoTV",
+                        "Playback selected: ${tier.quality}/${tier.codec}/${track?.width}x${track?.height}" +
+                            "/${tier.bitrate}bps" +
+                            if (forced) " (forced best effort)" else "",
+                    )
+                    closeProbesExcept(probed, outcome.video)
+                    return OpenedStream(outcome.video, tier, ladder, track)
+                }
+                Log.i(
+                    "HongguoTV",
+                    "Skipped ${tier.quality} ${tier.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
+                )
+                outcome.video.close()
+            }
+            is TierProbe.Failed -> {
+                val error = outcome.error
+                if(cancelledPlayback(error)) {
+                    probed.values.forEach { (it as? TierProbe.Opened)?.video?.close() }
+                    throw error
+                }
+                if (error is PlaybackSourceUnavailableException) primaryDeterministic = error
+                else primaryError = error
+                Log.w("HongguoTV", "Playback tier failed: ${tier.quality}/${tier.codec}: ${error.message}")
+            }
+        }
+    }
+    // Every opened probe that was not selected has served its purpose.
+    probed.values.forEach { (it as? TierProbe.Opened)?.video?.close() }
     // The website fallback is a continuation source, never proof that the signed
     // primary ladder failed capability checks. Only reach it after every primary
     // candidate was attempted.
@@ -241,6 +288,77 @@ internal fun openStream(
     }
     return null
 }
+
+/** Result of one parallel MP4 header probe. */
+internal sealed class TierProbe {
+    class Opened(val video: RemoteVideo, val track: VideoTracks.Track?) : TierProbe()
+    class Failed(val error: Exception) : TierProbe()
+}
+
+/**
+ * Reads every candidate's header concurrently on a small daemon pool. Returns the
+ * outcomes keyed by tier (a tier whose probe never completed is absent). The
+ * caller picks the winner by priority and closes the rest. [probe] does the real
+ * I/O for one tier; tests inject a fake to verify the concurrency and cleanup.
+ */
+internal fun probeTiers(
+    attempts: List<PlaybackAttempt>,
+    pool: java.util.concurrent.ExecutorService = probePool,
+    probe: (StreamInfo) -> TierProbe,
+): Map<StreamInfo, TierProbe> {
+    if (attempts.isEmpty()) return emptyMap()
+    val futures = attempts.associate { attempt ->
+        attempt.tier to pool.submit<TierProbe?> {
+            if (Thread.currentThread().isInterrupted) return@submit null
+            // Diagnostics only: a logging failure (e.g. the JVM test harness) must
+            // never turn into a tier failure.
+            runCatching {
+                Log.i(
+                    "HongguoTV",
+                    "Playback trying: ${attempt.tier.quality}/${attempt.tier.codec}/" +
+                        "${attempt.tier.width}x${attempt.tier.height}" +
+                        if (attempt.forced) " (best effort)" else "",
+                )
+            }
+            probe(attempt.tier)
+        }
+    }
+    val outcomes = linkedMapOf<StreamInfo, TierProbe>()
+    var firstCancellation: Exception? = null
+    for ((tier, future) in futures) {
+        val outcome = try {
+            future.get()
+        } catch (error: java.util.concurrent.ExecutionException) {
+            (error.cause as? Exception)?.let { TierProbe.Failed(it) }
+        }
+        if (outcome != null) {
+            outcomes[tier] = outcome
+            if (outcome is TierProbe.Failed && cancelledPlayback(outcome.error) && firstCancellation == null) {
+                firstCancellation = outcome.error
+            }
+        }
+    }
+    // A cancelled probe cancels the whole selection: close everything that opened
+    // and let the caller observe the cancellation instead of a half-probed ladder.
+    if (firstCancellation != null) {
+        outcomes.values.forEach { (it as? TierProbe.Opened)?.video?.close() }
+        futures.values.forEach { it.cancel(true) }
+        throw firstCancellation
+    }
+    return outcomes
+}
+
+private fun closeProbesExcept(probed: Map<StreamInfo, TierProbe>, keep: RemoteVideo) {
+    probed.values.forEach { probe ->
+        (probe as? TierProbe.Opened)?.video?.takeIf { it !== keep }?.close()
+    }
+}
+
+/** Shared daemon pool: header probes are short and bursty, one burst per episode switch. */
+private val probePool: java.util.concurrent.ExecutorService =
+    java.util.concurrent.Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "hongguotv-tier-probe").apply { isDaemon = true }
+    }
 
 internal fun throwNoOpenedStream(ladder: List<StreamInfo>, lastError: Exception?): Nothing {
     // No candidate was opened: preserve the actual transport failure so the

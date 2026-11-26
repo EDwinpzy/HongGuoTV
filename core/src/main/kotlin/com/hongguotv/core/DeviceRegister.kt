@@ -41,8 +41,16 @@ import java.util.zip.GZIPOutputStream
  *    带上签名头反而会被判异常客户端。
  */
 object DeviceRegister {
-    /** 注册接口的域名。`is.snssdk.com` 与 `log5-applog-lf` 等价，抓包里两个都在用。 */
-    private const val HOST = "https://log5-applog-lf.fqnovel.com"
+    /**
+     * 注册接口的域名。三家等价（抓包与上游实测），按顺序轮换：首域名打不通时换下一家，
+     * 而不是让一次注册卡满播放路由的 8s 预算。`log.snssdk.com` 是上游桌面端实际在用的
+     * 注册主机（其 README 要求把它加入 DNS 白名单）。
+     */
+    private val HOSTS = listOf(
+        "https://log5-applog-lf.fqnovel.com",
+        "https://log.snssdk.com",
+        "https://is.snssdk.com",
+    )
     private const val PATH = "/service/2/device_register/"
     private const val QUERY =
         "?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1"
@@ -200,7 +208,10 @@ object DeviceRegister {
             "x-ss-stub" to digest("MD5", body).hex().uppercase(),
         )
 
-    fun url() = HOST + PATH + QUERY
+    fun url(hostIndex: Int = 0) = HOSTS[hostIndex.coerceIn(0, HOSTS.lastIndex)] + PATH + QUERY
+
+    /** Number of equivalent registration hosts; callers rotate through them on failure. */
+    fun hostCount() = HOSTS.size
 
     /**
      * 解析注册响应。

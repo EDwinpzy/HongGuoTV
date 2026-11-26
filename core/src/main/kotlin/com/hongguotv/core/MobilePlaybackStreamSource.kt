@@ -172,49 +172,57 @@ internal class MobilePlaybackStreamSource(
             "_rticket" to now.toString(),
         )
         val hosts = if (speculative) TAB_HOSTS.take(1) else TAB_HOSTS
-        for (host in hosts) {
-            if (Thread.currentThread().isInterrupted) return null
-            // signPlayback appends and signs the final query; passing a URL that
-            // already carries '?' would produce a second query string.
-            val base = "https://$host$TAB_PATH"
-            val signed = signer.signPlayback(base, values, ByteArray(0), now)
-            val request = Request.Builder()
-                .url(signed.url)
-                .header("User-Agent", playbackUa)
-                .header("Accept", "application/json; charset=utf-8")
-                .header("Accept-Language", "zh-CN,zh;q=0.9")
-                .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
-                .removeHeader("x-ss-stub")
-                .removeHeader("Content-Type")
-                .removeHeader("Content-Encoding")
-                .get()
-                .build()
-            val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-            val tiers = try {
-                RequestScope.execute(PlaybackRouteTransport.call(transport, request)) { response ->
-                    if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
-                    val text = readLimited(response, "video_tab")
-                    if (text.isBlank()) return@execute null
-                    val root = json(text)
-                    if (root.optInt("code", root.optInt("Code", -1)) != 0) return@execute null
-                    val data = root.optJSONObject("data") ?: return@execute null
-                    val rows = data.optJSONObject("video_model_data") ?: data
-                    val row = rows.optJSONObject(id)
-                        ?: rows.keys().asSequence()
-                            .mapNotNull { rows.optJSONObject(it) }
-                            .firstOrNull { it.opt("video_model") != null }
-                        ?: return@execute null
-                    val model = modelValue(row.opt("video_model")) ?: return@execute null
-                    tiersOrCompatible(model, transport)
-                }
-            } catch (interrupted: java.io.InterruptedIOException) {
-                throw interrupted
-            } catch (_: IOException) {
-                null
-            }
-            if (!tiers.isNullOrEmpty()) return tiers
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        // Delayed hedge across the equivalent tab hosts (upstream `race`): the
+        // first host is sent at once; while it stays silent, the next one starts
+        // after HEDGE_DELAY_MS, and the first USABLE model wins. A host that
+        // answers before the delay wins alone, so the healthy path still costs
+        // one request. An empty body is not a win (risk-control signal) - the
+        // remaining hosts keep their chance before the empty answer is returned.
+        val routes = hosts.map { host -> tabRoute(host, values, now, transport) }
+        return HedgedCall.run(routes, HEDGE_DELAY_MS, { PlaybackRequestBudget.deadlineNanos() }) { response ->
+            if (!response.isSuccessful) throw IOException("video_tab HTTP ${response.code}")
+            val text = readLimited(response, "video_tab")
+            if (text.isBlank()) return@run HedgedCall.Verdict.Empty
+            val root = json(text)
+            if (root.optInt("code", root.optInt("Code", -1)) != 0) return@run HedgedCall.Verdict.Empty
+            val data = root.optJSONObject("data") ?: return@run HedgedCall.Verdict.Empty
+            val rows = data.optJSONObject("video_model_data") ?: data
+            val row = rows.optJSONObject(id)
+                ?: rows.keys().asSequence()
+                    .mapNotNull { rows.optJSONObject(it) }
+                    .firstOrNull { it.opt("video_model") != null }
+                ?: return@run HedgedCall.Verdict.Empty
+            val model = modelValue(row.opt("video_model")) ?: return@run HedgedCall.Verdict.Empty
+            val tiers = tiersOrCompatible(model, transport)
+            if (tiers.isEmpty()) HedgedCall.Verdict.Empty
+            else HedgedCall.Verdict.Usable(tiers)
         }
-        return null
+    }
+
+    /** One signed tab GET on [host]; the call inherits the playback budget slice. */
+    private fun tabRoute(
+        host: String,
+        values: Map<String, String>,
+        now: Long,
+        transport: OkHttpClient,
+    ): () -> okhttp3.Call {
+        // signPlayback appends and signs the final query; passing a URL that
+        // already carries '?' would produce a second query string.
+        val signed = signer.signPlayback("https://$host$TAB_PATH", values, ByteArray(0), now)
+        val request = Request.Builder()
+            .url(signed.url)
+            .header("User-Agent", playbackUa)
+            .header("Accept", "application/json; charset=utf-8")
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
+            .removeHeader("x-ss-stub")
+            .removeHeader("Content-Type")
+            .removeHeader("Content-Encoding")
+            .get()
+            .build()
+        // Each hedge gets the same playback budget slice a direct call would.
+        return { PlaybackRouteTransport.call(transport, request) }
     }
 
     /**
@@ -436,6 +444,8 @@ internal class MobilePlaybackStreamSource(
             "api5-normal-hl.fqnovel.com",
             "api5-normal-lf.fqnovel.com",
         )
+        /** Stagger between hedge starts; a healthy host answers well inside it. */
+        const val HEDGE_DELAY_MS = 1_200L
         val sharedSigner = Signer.sharedV5()
         val betterTier: Comparator<StreamInfo> =
             compareBy<StreamInfo> {

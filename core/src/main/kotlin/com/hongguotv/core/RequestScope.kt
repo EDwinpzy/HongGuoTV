@@ -44,6 +44,21 @@ internal object PlaybackRequestBudget {
     fun remainingMillis(): Long? = remaining.get()?.let {
         TimeUnit.NANOSECONDS.toMillis(it - System.nanoTime())
     }
+
+    /** Absolute deadline in System.nanoTime() units; null when no budget is active. */
+    fun deadlineNanos(): Long? = remaining.get()
+}
+
+/**
+ * Public wrapper around the playback budget for the app layer: the ladder read
+ * and the MP4 header probes of one episode switch must share ONE deadline, so a
+ * slow tier's header read can never push the switch past the user-facing budget.
+ */
+object PlaybackBudget {
+    fun <T> run(timeoutMs: Long, action: () -> T): T = PlaybackRequestBudget.run(timeoutMs, action)
+
+    /** Remaining budget of the current thread's playback deadline; null when none is active. */
+    fun remainingMillis(): Long? = PlaybackRequestBudget.remainingMillis()
 }
 
 /** Cancels only the work owned by one navigation/playback intent, including body reads. */
@@ -85,6 +100,41 @@ class RequestScope {
             owner?.attach(call)
             try { return call.execute().use(consume) }
             finally { owner?.detach(call) }
+        }
+
+        /**
+         * Async twin of [execute] for hedged requests: the call is attached to the
+         * requesting scope from the calling thread (so scope.cancel() still reaches
+         * it), then runs on OkHttp's dispatcher. [consume] runs on the dispatcher
+         * thread and its result/exception is delivered to [onDone].
+         */
+        fun enqueue(call: Call, consume: (Response) -> Unit, onDone: (IOException?) -> Unit) {
+            val owner = current.get()
+            try {
+                owner?.attach(call)
+            } catch (error: IOException) {
+                onDone(error)
+                return
+            }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    owner?.detach(call)
+                    onDone(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        response.use(consume)
+                        onDone(null)
+                    } catch (error: IOException) {
+                        onDone(error)
+                    } catch (error: RuntimeException) {
+                        onDone(IOException("播放接口返回了无法解析的内容", error))
+                    } finally {
+                        owner?.detach(call)
+                    }
+                }
+            })
         }
     }
 }
