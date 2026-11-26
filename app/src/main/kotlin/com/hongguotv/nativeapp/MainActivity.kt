@@ -2649,7 +2649,7 @@ class MainActivity: Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if(!reuse) {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
-            val view=newPlaybackView(PlaybackSurfaceKind.SURFACE_VIEW)
+            val view=newPlaybackView(playbackSurfaceKind(Build.MODEL))
             playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
             val poster=ImageView(this).apply {
                 scaleType=ImageView.ScaleType.CENTER_CROP
@@ -2747,12 +2747,7 @@ class MainActivity: Activity() {
             }
             attemptedQuality=opened.info.qualityValue
             currentTrack=opened.track; currentTier=opened.info; currentTiers=opened.tiers
-            val surfaceKind=playbackSurfaceKind(
-                Build.MODEL,
-                opened.info.isFallback,
-                opened.track?.width,
-                opened.track?.height,
-            )
+            val surfaceKind=playbackSurfaceKind(Build.MODEL)
             if(playerView?.tag!=surfaceKind) {
                 android.util.Log.i(
                     "HongguoTV",

@@ -148,36 +148,21 @@ class PlaybackSelectionTest {
         assertTrue(displayRefreshTargets(0f).isEmpty())
     }
 
-    @Test fun s621WebsiteFallbackUsesTextureRegardlessOfAdvertisedSize() {
+    @Test fun s621AlwaysUsesTextureToAvoidBlackHwcOutput() {
         assertEquals(
             PlaybackSurfaceKind.TEXTURE_VIEW,
-            playbackSurfaceKind("S621",true,1920,1080),
+            playbackSurfaceKind("S621"),
         )
         assertEquals(
             PlaybackSurfaceKind.TEXTURE_VIEW,
-            playbackSurfaceKind("s621",true,null,null),
+            playbackSurfaceKind("s621"),
         )
     }
 
-    @Test fun s621LowResolutionPrimaryUsesTextureButHdKeepsHardwareSurface() {
-        assertEquals(
-            PlaybackSurfaceKind.TEXTURE_VIEW,
-            playbackSurfaceKind("S621",false,640,360),
-        )
-        assertEquals(
-            PlaybackSurfaceKind.TEXTURE_VIEW,
-            playbackSurfaceKind("S621",false,360,640),
-        )
+    @Test fun otherDevicesKeepHardwareSurface() {
         assertEquals(
             PlaybackSurfaceKind.SURFACE_VIEW,
-            playbackSurfaceKind("S621",false,1920,1080),
-        )
-    }
-
-    @Test fun otherDevicesKeepHardwareSurfaceForLowResolutionFallback() {
-        assertEquals(
-            PlaybackSurfaceKind.SURFACE_VIEW,
-            playbackSurfaceKind("Other TV",true,640,360),
+            playbackSurfaceKind("Other TV"),
         )
     }
 }
