@@ -95,7 +95,12 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo): Closeab
         var position=start
         var full=0L
         var requests=0
-        val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(MEDIA_BUDGET_MS)
+        // A header probe inside the playback budget must stop at that deadline,
+        // not at its own longer media budget (otherwise one dead CDN edge spent
+        // 12s per tier on top of the ladder read, with no overall cap).
+        val budget=minOf(MEDIA_BUDGET_MS,PlaybackRequestBudget.remainingMillis() ?: MEDIA_BUDGET_MS)
+        if(budget<=0) throw SocketTimeoutException("视频读取超时")
+        val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(budget)
         while(true) {
             val target=if(full>0) minOf(end,full-1) else end
             if(position>target) break

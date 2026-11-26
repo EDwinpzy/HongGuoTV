@@ -671,3 +671,18 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 编译与单测 | PASS | `:core:test :app:testDebugUnitTest :app:assembleDebug` 通过 |
 
 限制：本轮只安装 Debug 包，未生成或发布 Release，未运行 `lintVitalRelease`。ADB 输入、截图和 `gfxinfo` 仍不能替代投影幕布的人工长时间观察；未覆盖数小时连播、弱网、其他 TV 型号。网页完整片源对本集仍返回 403，但签名通道已恢复，不影响播放。
+
+## 2026-11-26 播放取流超时优化（单测，未实机）
+
+对照上游桌面客户端 `yangbin1322/hongguo-player v1.2.32` 的网络层（Go 二进制静态反汇编，非运行时抓包）：其 `video_tab` 读取为 250ms 错峰的多路竞速、首个可用结果即取消其余；主机健康记忆 600s、失败拉黑 120s；注册走 `log.snssdk.com` 等多主机；前台取源总预算 25s。本仓库此前为严格串行：ladder 10s 预算之外，每档 MP4 header 探测另有 12s/档且无总上限。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| tab GET 延迟对冲 | PASS（单测） | `HedgedCallTest`：首路 1.2s 内成功只发 1 个请求；首路挂起则 1.2s 后放第二路并取消首路；首路空响应不算赢；全部空返回 null；全部失败抛最后错误；预算耗尽立即停止 |
+| 现有 mobile-v5 行为不变 | PASS（单测） | `MobilePlaybackStreamSourceTest` 原断言“POST 空 → GET 主机 b 成功恰 2 个请求”仍通过，健康路径请求数不变 |
+| MP4 header 并行探测 | PASS（单测） | `TierProbeTest`：两档各 300ms 的探测总耗时 < 550ms（串行为 600ms）；单档失败不遮蔽其它档；取消会中断整个选择 |
+| 切集总预算 | PASS（单测） | `openStream` 现由 `PlaybackBudget.run` 包住：前台 18s、预取 10s；`RemoteVideo.range` 取 `min(媒体预算, 剩余播放预算)`，ladder 与 header 共享一个截止时间 |
+| 设备注册主机轮换 | PASS（单测） | `DeviceRegister` 由单主机改为 `log5-applog-lf.fqnovel.com → log.snssdk.com → is.snssdk.com`；超时换下一家，服务端明确拒绝（`device_id=0`）则直接返回不重试 |
+| 回归 | PASS | `:core:test` 271/271、`:app:testDebugUnitTest` 30/30、`:app:lintVitalRelease`、`:app:compileReleaseKotlin` 通过 |
+
+限制：本轮未做 S621 实机验证，未测弱网/长时间连播；`assembleRelease` 因验证 worktree 无 `.keys/` 签名材料未运行。对冲在首路健康时零额外请求，但首路慢于 1.2s 时会多发 1–2 个 GET，对每身份请求配额的影响需实机观察。

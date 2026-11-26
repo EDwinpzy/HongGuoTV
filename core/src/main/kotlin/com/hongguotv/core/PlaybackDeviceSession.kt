@@ -20,19 +20,7 @@ class PlaybackDeviceRegistrationException(cause: Throwable? = null) :
 
 /** Anonymous playback identity. Register once, then keep the same identity across repositories. */
 class PlaybackDeviceSession(
-    private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
-        val body = DeviceRegister.payload(VendorConstants.device)
-        val request = Request.Builder().url(DeviceRegister.url())
-        DeviceRegister.headers(body, VendorConstants.device).forEach { (key, value) ->
-            request.header(key, value)
-        }
-        request.post(body.toRequestBody("application/octet-stream".toMediaType()))
-        // Registration has no account cookies. Cancellation belongs to the requesting work scope.
-        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        RequestScope.execute(PlaybackRouteTransport.call(transport,request.build())) { response ->
-            DeviceRegister.parse(cloudResponse(response), response.headers("Set-Cookie"))
-        }
-    }
+    private val register: (OkHttpClient) -> DeviceRegister.Registered? = ::registerOnAnyHost
 ) {
     companion object {
         val shared = PlaybackDeviceSession()
@@ -133,3 +121,34 @@ class PlaybackDeviceSession(
 }
 
 private val validId = Regex("[1-9][0-9]{0,29}")
+
+/**
+ * Default registration: rotate through the equivalent registration hosts. A host
+ * that times out must not spend the whole playback route budget - each host gets
+ * its own short deadline via PlaybackRouteTransport and the next one is tried at
+ * once. A host that ANSWERS with a rejected registration (device_id=0) proves the
+ * network path is fine, so the rejection is returned as-is instead of hammering
+ * the other hosts with a payload the server already declined.
+ */
+private fun registerOnAnyHost(http: OkHttpClient): DeviceRegister.Registered? {
+    val body = DeviceRegister.payload(VendorConstants.device)
+    val headers = DeviceRegister.headers(body, VendorConstants.device)
+    // Registration has no account cookies. Cancellation belongs to the requesting work scope.
+    val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+    var lastError: IOException? = null
+    for (hostIndex in 0 until DeviceRegister.hostCount()) {
+        val request = Request.Builder().url(DeviceRegister.url(hostIndex))
+        headers.forEach { (key, value) -> request.header(key, value) }
+        request.post(body.toRequestBody("application/octet-stream".toMediaType()))
+        try {
+            // null = the host answered but rejected the registration: return it.
+            return RequestScope.execute(PlaybackRouteTransport.call(transport, request.build())) { response ->
+                DeviceRegister.parse(cloudResponse(response), response.headers("Set-Cookie"))
+            }
+        } catch (error: IOException) {
+            if (Thread.currentThread().isInterrupted || error is InterruptedIOException) throw error
+            lastError = error
+        }
+    }
+    throw lastError ?: IOException("播放设备注册失败，请稍后重试")
+}
