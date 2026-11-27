@@ -19,6 +19,7 @@ class RecommendationFeedTest {
         ids: List<String>,
         session: String = "recommend-session",
         vertical: Map<String, Boolean> = emptyMap(),
+        titles: Map<String, String> = emptyMap(),
     ) = JSONObject()
         .put("code",0)
         .put("data",JSONObject().put("tab_item",JSONArray().put(
@@ -31,7 +32,7 @@ class RecommendationFeedTest {
                             ids.forEachIndexed { index,id ->
                                 val row=JSONObject()
                                     .put("series_id",id)
-                                    .put("series_title","推荐$id")
+                                    .put("series_title",titles[id] ?: "推荐$id")
                                     .put("series_cover","https://example.com/$id.jpg")
                                     .put("episode_cnt",index+10)
                                 vertical[id]?.let { value ->
@@ -212,5 +213,110 @@ class RecommendationFeedTest {
         assertEquals(listOf("414","415"),result.items.map { it.id })
         assertEquals(listOf("0","2","3"),offsets)
         assertEquals(3,calls)
+    }
+
+    @Test fun sameSeriesAcrossSeasonsWithDifferentIdsIsDeduplicated() {
+        var calls=0
+        val saved=mutableListOf<RecommendationSeen>()
+        val store=object: RecommendationSeenStore {
+            override fun save(seen: RecommendationSeen) { saved+=seen }
+        }
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            val body=if(calls==1) {
+                feedBody(
+                    listOf("501","502"),
+                    titles=mapOf(
+                        "501" to "大明，李景隆的别样人生第二季",
+                        "502" to "独立剧A",
+                    ),
+                )
+            } else {
+                feedBody(
+                    listOf("503","504"),
+                    titles=mapOf(
+                        "503" to "大明李景隆的别样人生第2季",
+                        "504" to "独立剧B",
+                    ),
+                )
+            }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).build()
+        }.build()
+        val feed=RecommendationFeed(
+            http,
+            AccountCredentials("session=real-account"),
+            pageTarget=3,
+            maxRounds=3,
+            playbackSession=PlaybackDeviceSession {
+                DeviceRegister.Registered("1905892595378490","1905892595382586")
+            },
+            clock={ 1_760_000_000_000L },
+            seenStore=store,
+        )
+
+        val result=feed.page(1)
+
+        assertEquals(listOf("501","502","504"),result.items.map { it.id })
+        assertEquals(2,calls)
+        assertTrue(saved.isNotEmpty())
+        assertTrue(saved.last().ids.contains("503"))
+        assertTrue(saved.last().families.contains(recommendationFamilyKey("大明，李景隆的别样人生第二季")))
+    }
+
+    @Test fun persistedSeenIdsAndFamiliesSurviveANewFeedInstance() {
+        val family=recommendationFamilyKey("同名剧第三季")
+        val saved=mutableListOf<RecommendationSeen>()
+        val store=object: RecommendationSeenStore {
+            override fun load()=RecommendationSeen(ids=setOf("601"),families=setOf(family))
+            override fun save(seen: RecommendationSeen) { saved+=seen }
+        }
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            val body=feedBody(
+                listOf("601","602"),
+                titles=mapOf(
+                    "601" to "同名剧第一季",
+                    "602" to "新剧",
+                ),
+            )
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(body.toResponseBody()).build()
+        }.build()
+        val feed=RecommendationFeed(
+            http,
+            AccountCredentials("session=real-account"),
+            pageTarget=1,
+            maxRounds=1,
+            playbackSession=PlaybackDeviceSession {
+                DeviceRegister.Registered("1905892595378490","1905892595382586")
+            },
+            clock={ 1_760_000_000_000L },
+            seenStore=store,
+        )
+
+        val result=feed.page(1)
+
+        assertEquals(listOf("602"),result.items.map { it.id })
+        assertTrue(saved.last().ids.containsAll(listOf("601","602")))
+        assertTrue(saved.last().families.contains(family))
+    }
+
+    @Test fun familyKeyIgnoresSeasonSuffixSpacingAndPunctuation() {
+        assertEquals(
+            recommendationFamilyKey("大明，李景隆的别样人生第二季"),
+            recommendationFamilyKey(" 大明李景隆的别样人生 第2部 "),
+        )
+    }
+
+    @Test fun familyKeyIgnoresTrailingSeasonNumberOnly() {
+        assertEquals(
+            recommendationFamilyKey("母凭子贵后被皇家宠上天3"),
+            recommendationFamilyKey("母凭子贵后被皇家宠上天 2"),
+        )
+        assertEquals(
+            recommendationFamilyKey("母凭子贵后被皇家宠上天（3）"),
+            recommendationFamilyKey("母凭子贵后被皇家宠上天"),
+        )
+        assertEquals("重生1983", recommendationFamilyKey("重生1983"))
     }
 }

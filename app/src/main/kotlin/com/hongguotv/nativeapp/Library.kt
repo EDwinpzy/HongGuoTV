@@ -18,12 +18,17 @@ class Library(context: Context) {
     private companion object {
         // A replacement Activity must not load before its predecessor's final checkpoint commits.
         val retiredWrites = mutableListOf<LatestWriteQueue<String, () -> Any?>>()
+        // Solid dedupe memory for a week; older entries expire so the feed never dries up permanently.
+        const val RECOMMENDATION_SEEN_TTL_MS = 7L * 24 * 60 * 60 * 1000
     }
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val loader = Executors.newSingleThreadExecutor { task -> Thread(task, "hongguotv-library-load") }
     private val prefs by lazy { app.getSharedPreferences("native-library-v1", Context.MODE_PRIVATE) }
     private val homePrefs by lazy { app.getSharedPreferences("native-home-cache-v1", Context.MODE_PRIVATE) }
+    private val recommendationPrefs by lazy {
+        app.getSharedPreferences("native-recommendation-v1", Context.MODE_PRIVATE)
+    }
     private val writes = LatestWriteQueue<String, () -> Any?>("hongguotv-library-write", write = { batch -> commit(prefs, batch) },
         failed = { Log.w("HongguoTV", "Local library commit failed; pending changes retained for retry") })
     private val homeWrites = LatestWriteQueue<String, () -> Any?>("hongguotv-home-write", write = { batch -> commit(homePrefs, batch) },
@@ -193,6 +198,23 @@ class Library(context: Context) {
         themes[key] = CatalogPage(retained, hasMore)
         themeSavedAt[key] = now
         homeWrites.submit(mapOf("theme-$key" to { CatalogSnapshot.encode(retained, hasMore, now) }))
+    }
+    fun recommendationSeen(): RecommendationSeen {
+        val savedAt = recommendationPrefs.getLong("seenSavedAt", 0L)
+        if (savedAt <= 0L || System.currentTimeMillis() - savedAt > RECOMMENDATION_SEEN_TTL_MS) {
+            return RecommendationSeen()
+        }
+        return RecommendationSeen(
+            ids = recommendationPrefs.getStringSet("seenIds", emptySet()).orEmpty().toSet(),
+            families = recommendationPrefs.getStringSet("seenFamilies", emptySet()).orEmpty().toSet(),
+        )
+    }
+    fun saveRecommendationSeen(seen: RecommendationSeen) {
+        recommendationPrefs.edit()
+            .putStringSet("seenIds", seen.ids.take(540).toSet())
+            .putStringSet("seenFamilies", seen.families.take(540).toSet())
+            .putLong("seenSavedAt", System.currentTimeMillis())
+            .commit()
     }
     var maxQuality: Int
         get() = state().settings.quality

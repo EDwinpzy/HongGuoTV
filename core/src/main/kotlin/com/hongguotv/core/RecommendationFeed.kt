@@ -16,6 +16,7 @@ class RecommendationCursor internal constructor(
     @Volatile internal var offset: Int = 0,
 ) {
     internal val seen = linkedSetOf<String>()
+    internal val seenFamilies = linkedSetOf<String>()
     internal var expectedPage = 1
     internal var lastPage = 0
     internal var lastResult: CatalogPage? = null
@@ -37,7 +38,18 @@ class RecommendationCursor internal constructor(
         }
     }
 
+    internal fun rememberFamilies(keys: Collection<String>) {
+        synchronized(seenFamilies) {
+            seenFamilies.addAll(keys)
+            while (seenFamilies.size > 540) seenFamilies.remove(seenFamilies.first())
+        }
+    }
+
     internal fun seenIds(): Set<String> = synchronized(seen) { seen.toSet() }
+
+    internal fun seenFamilyKeys(): Set<String> = synchronized(seenFamilies) { seenFamilies.toSet() }
+
+    internal fun snapshot() = RecommendationSeen(seenIds(), seenFamilyKeys())
 
     fun markSeen(id: String) {
         if (id.isBlank() || id.length > 32) return
@@ -48,10 +60,39 @@ class RecommendationCursor internal constructor(
 class NoNewRecommendationsException(val rememberedCount: Int = 0) :
     IOException("暂时没有新的推荐，请稍后再试")
 
+data class RecommendationSeen(
+    val ids: Set<String> = emptySet(),
+    val families: Set<String> = emptySet(),
+)
+
+interface RecommendationSeenStore {
+    fun load(): RecommendationSeen = RecommendationSeen()
+    fun save(seen: RecommendationSeen) {}
+}
+
+internal object IgnoreRecommendationSeenStore : RecommendationSeenStore
+
+/**
+ * Recommendations can expose the same drama as different series ids, especially
+ * across seasons. Group those rows by a season- and punctuation-insensitive title.
+ */
+internal fun recommendationFamilyKey(title: String): String {
+    val compact = title.trim().lowercase()
+        .replace(Regex("\\s+"), "")
+        .replace(Regex("[，。！？、；：·•“”‘’\"'（）()\\[\\]【】《》<>—–_\\-]"), "")
+    val withoutSeason = compact
+        .replace(Regex("第[0-9零〇一二三四五六七八九十百千万两]+[季部]"), "")
+        .ifBlank { compact }
+    // Some feeds append a bare season number ("母凭子贵后被皇家宠上天3"); a digit
+    // preceded by a digit (years such as 1983) stays part of the title.
+    return withoutSeason.replace(Regex("([\\u4e00-\\u9fff])[0-9０-９]{1,2}$"), "$1")
+}
+
 internal data class RecommendationPage(
     val items: List<Series>,
     val session: String,
     val seenIds: List<String>,
+    val seenFamilies: List<String>,
 )
 
 /**
@@ -66,6 +107,7 @@ class RecommendationFeed(
     internal val cursor: RecommendationCursor = RecommendationCursor(),
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val seenStore: RecommendationSeenStore = IgnoreRecommendationSeenStore,
 ) {
     private val accountHttp = http.newBuilder()
         .followRedirects(false)
@@ -73,6 +115,13 @@ class RecommendationFeed(
         .build()
     /** Current-batch pages only; [reset] drops them when the tab is entered again. */
     private val pageCache = linkedMapOf<Int, CatalogPage>()
+
+    init {
+        runCatching { seenStore.load() }.getOrNull()?.let { remembered ->
+            cursor.remember(remembered.ids)
+            cursor.rememberFamilies(remembered.families)
+        }
+    }
 
     /** Start a new server batch. Already seen ids stay excluded so the tab does not replay old rows. */
     fun reset() = synchronized(cursor) {
@@ -148,12 +197,17 @@ class RecommendationFeed(
                 if (discoveredFlow != null) cursor.cellFlow = discoveredFlow
 
                 val seen = cursor.seenIds()
-                val fresh = parsed.items.filterNot { it.id in seen }
+                val seenFamilies = cursor.seenFamilyKeys()
+                val fresh = parsed.items.filterNot {
+                    it.id in seen || recommendationFamilyKey(it.title) in seenFamilies
+                }
                 cursor.remember(parsed.seenIds)
+                cursor.rememberFamilies(parsed.seenFamilies)
                 fresh.forEach { item ->
                     cursor.markSeen(item.id)
                     collected.putIfAbsent(item.id, item)
                 }
+                runCatching { seenStore.save(cursor.snapshot()) }
                 roundComplete = true
                 break
             }
@@ -377,6 +431,9 @@ class RecommendationFeed(
                 items = entries.filterNot { (row, _) -> vertical(row) == true }.map { it.second },
                 session = session,
                 seenIds = entries.map { it.second.id },
+                seenFamilies = entries.map { recommendationFamilyKey(it.second.title) }
+                    .filter { it.isNotBlank() }
+                    .distinct(),
             )
         }
 

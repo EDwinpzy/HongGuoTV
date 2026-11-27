@@ -496,6 +496,10 @@ class MainActivity: Activity() {
         super.onCreate(state)
         window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         library=Library(this); artwork=ArtworkLoader(this); tvTools=TvTools(this); root=FrameLayout(this).apply { background=TvStyle.pageBackground(this@MainActivity) }; setContentView(root)
+        repository.recommendationSeenStore = object : RecommendationSeenStore {
+            override fun load() = library.recommendationSeen()
+            override fun save(seen: RecommendationSeen) = library.saveRecommendationSeen(seen)
+        }
         // Decoder capability probe + learned runtime failures (upstream 2026-11-14 port).
         // TV boxes over-report AVC sizes; the log line makes a TV screenshot diagnostic.
         CodecCapabilities.init(this); CodecCapabilities.logDeviceCapabilities()
@@ -921,6 +925,13 @@ class MainActivity: Activity() {
                     recommendationFeedPage=nextPage
                     val known=recommendationFeedItems.mapTo(mutableSetOf()) { it.id }
                     val fresh=page.items.filter { known.add(it.id) }
+                    val freshIds=fresh.mapTo(mutableSetOf()) { it.id }
+                    val duplicates=page.items.filterNot { it.id in freshIds }
+                    android.util.Log.i(
+                        "HongguoTV",
+                        "Recommendation page=$nextPage raw=${page.items.size} fresh=${fresh.size} "+
+                            "duplicates=${duplicates.joinToString(",") { it.id }}",
+                    )
                     recommendationFeedItems=recommendationFeedItems+fresh
                     recommendationFeedHasMore=page.hasMore && fresh.isNotEmpty()
                     val direction=recommendationFeedPendingDirection; recommendationFeedPendingDirection=0

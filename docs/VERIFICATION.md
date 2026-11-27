@@ -868,3 +868,24 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | AAB 产物 | PASS | `hongguotv-1.1.28.aab`，4,426,056 bytes，SHA-256 `14A246EB6493DD89572ED621DDA8BD816C88E363246128AB4872F4534F28C79F` |
 
 限制：设备输入和截图来自 ADB 注入，不是物理遥控器；Release 实机样本只覆盖《持械入宋》12 季及 S621，未覆盖其他 TV 型号。原反馈截图中的《狩妖传》官方相关作品接口返回零个同系列季，因此不会伪造系列剧条目；同 IP 衍生剧过滤、待上线分支和接口失败缓存仍由单测及代码路径覆盖。
+
+## 2026-11-28 推荐页同剧多季去重（Debug 实机）
+
+反馈“推荐页重复太多”。实测官方推荐流会把同一部剧按季拆成不同 `series_id`，例如 `7643706500782771224`《大明，李景隆的别样人生第二季》和 `7677979299084782616`《大明，李景隆的别样人生第六季》；旧逻辑只按 `series_id` 去重，且去重记录仅存进程内存，重启后同一批剧会再次出现。
+
+本次修改：
+
+- 新增季号与标点无关的标题族键：忽略空格、标点、“第 N 季/部”和纯数字季后缀（如《母凭子贵后被皇家宠上天3》），`1983` 这类年份数字不误删。
+- 去重同时匹配 `series_id` 和标题族，单批响应里同族的其他季直接丢弃。
+- 已展示的 ID 和标题族写入 `native-recommendation-v1` 偏好，重启后继续生效；保留 7 天后过期，避免长期使用后推荐池被永久掏空。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 完整门禁 | PASS | `:core:test`、`:app:testDebugUnitTest`、`:app:assembleDebug` 通过 |
+| 单测覆盖 | PASS | `sameSeriesAcrossSeasonsWithDifferentIdsIsDeduplicated`、`persistedSeenIdsAndFamiliesSurviveANewFeedInstance`、`familyKeyIgnoresSeasonSuffixSpacingAndPunctuation`、`familyKeyIgnoresTrailingSeasonNumberOnly` |
+| 跨页不重复 | PASS（实机） | S621 日志 `Recommendation page=2 raw=4 fresh=4 duplicates=`，第二页 4 条全部为新剧集 |
+| 重启后不重放 | PASS（实机） | 首轮记录 16 个 ID/16 个标题族后强制停止并重启，再进推荐日志 `Recommendation start items=8 fresh=true`，8 条全部是未出现过的新剧集 |
+| 去重记录持久化 | PASS（实机） | `run-as` 读取 `native-recommendation-v1` 可见 `seenIds`、`seenFamilies`（含去季后的“我家仙妻不太正经”“系统催人恶状元也疯狂”“我的小团子徒弟”）和 `seenSavedAt` |
+| 播放与稳定性 | PASS | 最终 Debug 包覆盖安装后进入推荐自动出画；`crash` buffer 与 `lastanr` 无目标应用 `FATAL EXCEPTION` / ANR |
+
+限制：设备输入为 ADB 注入而非物理遥控器，只覆盖 S621；标题族按名称合并，同名但实际无关的两部剧可能被误判为同族；7 天过期窗口为经验值，长时间连播耗尽推荐池的边界未做小时级压测。

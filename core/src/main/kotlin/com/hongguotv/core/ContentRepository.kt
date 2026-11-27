@@ -166,6 +166,7 @@ class ContentRepository(
     private val catalogCursors = linkedMapOf<String, Pair<Int,String>>() // genre key -> (offset, session)
     private var recommendationFeed: RecommendationFeed? = null
     private var recommendationIdentity = ""
+    @Volatile var recommendationSeenStore: RecommendationSeenStore = IgnoreRecommendationSeenStore
 
     private fun card(item: JSONObject): Series {
         val o = if (item.optJSONObject("video_data") != null) item.optJSONObject("video_data")!! else item
@@ -214,7 +215,7 @@ class ContentRepository(
     ): CatalogPage {
         if (account == null) return popularRecommendations(page)
         val feed = recommendationFeed?.takeIf { recommendationIdentity == identity }
-            ?: RecommendationFeed(http, account, clock = clock).also {
+            ?: RecommendationFeed(http, account, clock = clock, seenStore = recommendationSeenStore).also {
                 recommendationFeed = it
                 recommendationIdentity = identity
             }
@@ -231,7 +232,12 @@ class ContentRepository(
         if (account == null) return
         val feed = recommendationFeed?.takeIf { recommendationIdentity == identity }
         if (feed == null) {
-            recommendationFeed = RecommendationFeed(http, account, clock = clock)
+            recommendationFeed = RecommendationFeed(
+                http,
+                account,
+                clock = clock,
+                seenStore = recommendationSeenStore,
+            )
             recommendationIdentity = identity
         } else {
             feed.reset()
