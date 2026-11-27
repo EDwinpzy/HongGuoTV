@@ -778,3 +778,25 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 回归与 Debug 构建 | PASS | `:core:test` 相关测试、`:app:testDebugUnitTest`、`:app:assembleDebug` 通过 |
 
 限制：空页重试的实机分支受服务端瞬时响应影响，当前实机样本主要证明正常分页和可见弹幕；1/2/4 秒重试循环由代码与单测覆盖。设备输入为 ADB 注入，未覆盖数小时连播、弱网及其他 TV 型号。
+
+## 2026-11-27 v1.1.26 无感恢复正式发布（Release 实机）
+
+版本为 `1.1.26 / 10126`，基于任务分支 `codex/playback-silent-timeout-retry` 的发布构建；本轮未合并 `main`。正式包使用原有签名，覆盖安装到 JMGO S621，应用数据与观看记录保留。
+
+本次发布包含：
+
+- 瞬时播放超时、网络错误和解码器失败不再先弹出错误面板，改为原地静默重建播放器并恢复失败位置。
+- 连续解码失败时临时降档，用户保存的清晰度设置不被修改；恢复稳定 20 秒后重置重试预算。
+- 静默恢复后进度条在播放器 `READY` 或重新打开 HUD 时恢复。
+- 弹幕服务端返回“HTTP 200 + 空 data_list”时，按服务端 cursor 的窗口计数原地重试同一窗口，避免整集弹幕被提前结束。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 完整门禁 | PASS | `:core:test`、`:app:testDebugUnitTest`、`:app:lintVitalRelease`、`:app:assembleRelease`、`:app:bundleRelease` 通过 |
+| 版本与签名 | PASS | `aapt2` 读取 `versionCode=10126 / versionName=1.1.26`；证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`，与已发布版本一致 |
+| S621 覆盖安装 | PASS | `adb install -r` 返回 Success；应用数据与观看记录保留 |
+| Release 播放冒烟 | PASS | S621 画面显示第 20 集、进度条和滚动弹幕；未出现 FATAL EXCEPTION / ANR |
+| APK 产物 | PASS | `hongguotv-1.1.26.apk`，SHA-256 `8CBCBFFE85FDAC08C4A4B5429A132F82CC73C23435E13C6C091D9D5879F4C2AE` |
+| AAB 产物 | PASS | `hongguotv-1.1.26.aab`，SHA-256 `DA8163CCD06E37CBBCF4B8182B8035E01C993CA9F8706B3808C7E794F308EADC` |
+
+限制：设备输入和截图来自 ADB 注入，不是物理遥控器；本次只验证 S621 和当前播放样本，未覆盖弱网、数小时连播和其他 TV 型号。空页重试仍受服务端实际可返回评论限制，某些集数没有可展示评论时不会伪造弹幕。
