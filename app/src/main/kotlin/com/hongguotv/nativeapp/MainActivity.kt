@@ -42,6 +42,8 @@ class MainActivity: Activity() {
     private val accent=TvStyle.accent; private val white=TvStyle.text; private val muted=TvStyle.muted
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
+    /** One slow related-work lookup must never occupy the detail/playback IO pool. */
+    private val relatedWorker=Executors.newSingleThreadExecutor()
     private val repository=ContentRepository()
     private val networkCleanup=Executors.newSingleThreadExecutor()
     private val prefetchWorker=Executors.newSingleThreadExecutor()
@@ -247,6 +249,7 @@ class MainActivity: Activity() {
     private val favoriteBadges=mutableMapOf<String,TextView>()
     private var favoriteCheck: TextView?=null
     private var playerSidebar: PlayerSidebar?=null
+    private var playerSeriesJob: java.util.concurrent.Future<*>?=null
     private val recovery=RecoveryBudget()
     private var retryPending=false
     private var autoRecovery=false
@@ -3646,12 +3649,27 @@ class MainActivity: Activity() {
             data.episodes.size,episodeIndex,
             library.playbackSpeed,library.maxQuality,actualQualityText(),library.frameMode,
             library.danmaku,library.danmakuSize,library.danmakuSpeed,library.danmakuRows,library.danmakuAlpha,
-            sleepTimer.label(),
+            sleepTimer.label(),data.series.id,
         ),::loadCover,
             { current,view,located -> tvTools.episodePicker(data.episodes.size,current,view,located) },
             { selected ->
                 if(selected==episodeIndex) playerSidebar?.dismiss()
                 else { resumeOnClose=false; playerSidebar?.dismiss(); playEpisode(selected,autoplay=requestedAutoplay) }
+            },
+            { work,anchor ->
+                when {
+                    work.upcoming -> tvTools.info(
+                        "待上线",
+                        "《${work.series.title}》\n${work.season.ifBlank { "本剧" }}尚未上线，上线后可从手机红果 App 观看。",
+                        anchor,
+                    )
+                    work.series.id==data.series.id -> playerSidebar?.dismiss()
+                    else -> {
+                        resumeOnClose=false
+                        playerSidebar?.dismiss()
+                        openDetail(work.series,resume=true,autoplay=requestedAutoplay)
+                    }
+                }
             },
             { value ->
                 library.playbackSpeed=value; player?.setPlaybackSpeed(value); updatePlaybackText()
@@ -3716,6 +3734,19 @@ class MainActivity: Activity() {
             }
         )
         playerSidebar=next; next.show(initial)
+        playerSeriesJob?.cancel(true)
+        playerSeriesJob=relatedWorker.submit {
+            val seasons=try {
+                RelatedWorks.seasons(data.series,repository.related(data.series.id),includeCurrent=true)
+            } catch(problem: Exception) {
+                android.util.Log.w("HongguoTV","Player series fetch failed for ${data.series.id}",problem)
+                emptyList()
+            }
+            main.post {
+                if(isDestroyed || playerSidebar!==next || screen!="player" || detail?.series?.id!=data.series.id) return@post
+                next.updateSeries(seasons)
+            }
+        }
     }
     private fun formatTime(millis: Long): String { val seconds=(millis.coerceAtLeast(0)/1000); return "%02d:%02d".format(seconds/60,seconds%60) }
     private fun saveProgress(completed: Boolean=false) {
@@ -3738,6 +3769,7 @@ class MainActivity: Activity() {
         clearPlaybackDisplayMode()
         val wasForeground=foreground; foreground=false
         val oldPanel=playerSidebar; playerSidebar=null; oldPanel?.dismiss(); foreground=wasForeground
+        playerSeriesJob?.cancel(true); playerSeriesJob=null
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
@@ -3999,7 +4031,7 @@ class MainActivity: Activity() {
         if(::cloudAccount.isInitialized) cloudAccount.destroy()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
         cancelCatalogPrefetch()
-        io.shutdownNow(); prefetchWorker.shutdownNow(); catalogPrefetchWorker.shutdownNow()
+        io.shutdownNow(); relatedWorker.shutdownNow(); prefetchWorker.shutdownNow(); catalogPrefetchWorker.shutdownNow()
         networkCleanup.shutdown()
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()

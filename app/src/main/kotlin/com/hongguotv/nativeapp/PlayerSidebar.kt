@@ -19,6 +19,7 @@ import android.widget.TextView
 import com.hongguotv.core.DanmakuPrefs
 import com.hongguotv.core.PlaybackQuality
 import com.hongguotv.core.PlaybackSpeed
+import com.hongguotv.core.RelatedWork
 import com.hongguotv.core.VideoFrameMode
 
 enum class PlayerSidebarTab { EPISODES, SETTINGS }
@@ -39,6 +40,8 @@ data class PlayerSidebarState(
     val danmakuRows: Int,
     val danmakuAlpha: Int,
     val sleepLabel: String,
+    val seriesId: String = "",
+    val series: List<RelatedWork> = emptyList(),
 )
 
 /**
@@ -51,6 +54,7 @@ class PlayerSidebar(
     private val loadCover: (ImageView, String) -> Unit,
     private val locate: (Int, View, (Int) -> Unit) -> Unit,
     private val selectEpisode: (Int) -> Unit,
+    private val selectSeries: (RelatedWork, View) -> Unit,
     private val setSpeed: (Float) -> Unit,
     private val setQuality: (Int) -> Unit,
     private val setFrameMode: (VideoFrameMode) -> Unit,
@@ -75,6 +79,8 @@ class PlayerSidebar(
     private var tab = PlayerSidebarTab.EPISODES
     private var firstFocus: View? = null
     private var focusEpisode: Int? = null
+    private var contentScroll: ScrollView? = null
+    private var lastFocusTag: String? = null
 
     private fun dp(n: Number) = (n.toFloat() * activity.resources.displayMetrics.density).toInt()
 
@@ -134,9 +140,12 @@ class PlayerSidebar(
         selected: Boolean = false,
         currentEpisode: Boolean = false,
         compact: Boolean = false,
+        focusKey: String? = null,
+        onFocused: ((View) -> Unit)? = null,
         action: (() -> Unit)? = null,
     ) = label(value, if (compact) 12.5f else 13.5f, chipTextColor(false, selected, currentEpisode)).apply {
         id = View.generateViewId()
+        if (focusKey != null) tag = focusKey
         gravity = Gravity.CENTER
         isFocusable = true
         isFocusableInTouchMode = true
@@ -148,6 +157,10 @@ class PlayerSidebar(
                 background = chipBackground(focused, selected, currentEpisode)
                 setTextColor(chipTextColor(focused, selected, currentEpisode))
                 typeface = TvStyle.typeface(focused || selected)
+            }
+            if (focused) {
+                if (focusKey != null) lastFocusTag = focusKey
+                onFocused?.invoke(view)
             }
         }
         action?.let { setOnClickListener { it() } }
@@ -172,12 +185,36 @@ class PlayerSidebar(
             minOf(dp(560), (activity.resources.displayMetrics.widthPixels * .82f).toInt()),
             WindowManager.LayoutParams.MATCH_PARENT,
         )
-        dialog.window?.decorView?.post { firstFocus?.requestFocus() }
+        restoreFocusAfterRender()
     }
 
     fun dismiss() = dialog.dismiss()
 
+    /**
+     * The official related-work request runs while the sidebar is already usable. Replace
+     * the series strip in place (via a full re-render) without stealing focus from the
+     * episode/page chip the user is currently on or jumping the episode list back to top.
+     */
+    fun updateSeries(seasons: List<RelatedWork>) {
+        if (state.series == seasons) return
+        state = state.copy(series = seasons)
+        if (!dialog.isShowing || tab != PlayerSidebarTab.EPISODES) return
+        val previousScroll = contentScroll?.scrollY ?: 0
+        render()
+        restoreFocusAfterRender(previousScroll)
+    }
+
+    private fun restoreFocusAfterRender(scrollY: Int = -1) {
+        val focusTag = lastFocusTag
+        dialog.window?.decorView?.post {
+            if (scrollY >= 0) contentScroll?.scrollTo(0, scrollY)
+            val target = focusTag?.let { dialog.window?.decorView?.findViewWithTag<View>(it) }
+            (target ?: firstFocus)?.requestFocus()
+        }
+    }
+
     private fun render() {
+        firstFocus = null
         val panel = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(28), dp(22), dp(28), dp(22))
@@ -190,6 +227,7 @@ class PlayerSidebar(
             isVerticalScrollBarEnabled = false
             clipToPadding = false
         }
+        contentScroll = content
         panel.addView(content, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(14) })
         val body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         content.addView(body, LinearLayout.LayoutParams(-1, -2))
@@ -247,11 +285,11 @@ class PlayerSidebar(
         }
         val items = listOf(PlayerSidebarTab.EPISODES to "选集", PlayerSidebarTab.SETTINGS to "播放设置")
         val views = items.map { (target, name) ->
-            chip(name, selected = tab == target, compact = true) {
+            chip(name, selected = tab == target, compact = true, focusKey = "tab:${target.name}") {
                 if (tab != target) {
                     tab = target
                     render()
-                    dialog.window?.decorView?.post { firstFocus?.requestFocus() }
+                    restoreFocusAfterRender()
                 }
             }.apply {
                 minHeight = dp(32)
@@ -272,6 +310,8 @@ class PlayerSidebar(
     }
 
     private fun buildEpisodes(body: LinearLayout): List<MutableList<View>> {
+        val rows = mutableListOf<MutableList<View>>()
+        buildSeries(body)?.let { rows += it }
         body.addView(
             label("当前第 ${state.current + 1} 集", 12f, muted).apply {
                 setPadding(dp(2), 0, 0, dp(9))
@@ -293,59 +333,38 @@ class PlayerSidebar(
                     "${value * groupSize + 1}-${minOf((value + 1) * groupSize, state.episodeCount)}",
                     selected = value == page,
                     compact = true,
+                    focusKey = "page:$value",
+                    onFocused = { reveal(pageScroll, it) },
                 ) {
                     page = value
                     render()
-                    dialog.window?.decorView?.post { firstFocus?.requestFocus() }
+                    restoreFocusAfterRender()
                 }
                 pageRow.addView(pageChip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply {
                     if (pageViews.isNotEmpty()) leftMargin = dp(6)
                 })
                 pageViews += pageChip
-                pageChip.setOnFocusChangeListener { _, focused ->
-                    if (focused) {
-                        pageScroll.post {
-                            val left = pageScroll.scrollX
-                            val right = left + pageScroll.width
-                            val target = when {
-                                pageChip.left < left -> pageChip.left
-                                pageChip.right > right -> pageChip.right - pageScroll.width
-                                else -> left
-                            }
-                            if (target != left) pageScroll.smoothScrollTo(target.coerceAtLeast(0), 0)
-                        }
-                    }
-                }
             }
-            val jump = chip("跳转", compact = true)
+            val jump = chip(
+                "跳转",
+                compact = true,
+                focusKey = "jump",
+                onFocused = { reveal(pageScroll, it) },
+            )
             pageRow.addView(jump, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { leftMargin = dp(6) })
             pageViews += jump
-            jump.setOnFocusChangeListener { _, focused ->
-                if (focused) {
-                    pageScroll.post {
-                        val left = pageScroll.scrollX
-                        val right = left + pageScroll.width
-                        val target = when {
-                            jump.left < left -> jump.left
-                            jump.right > right -> jump.right - pageScroll.width
-                            else -> left
-                        }
-                        if (target != left) pageScroll.smoothScrollTo(target.coerceAtLeast(0), 0)
-                    }
-                }
-            }
             jump.setOnClickListener {
                 locate(state.current, jump) { target ->
                     page = target / groupSize
                     focusEpisode = target
+                    lastFocusTag = "episode:$target"
                     render()
-                    dialog.window?.decorView?.post { firstFocus?.requestFocus() }
+                    restoreFocusAfterRender()
                 }
             }
             pageScroll.addView(pageRow, android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
             body.addView(pageScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)).apply { bottomMargin = dp(12) })
         }
-        val rows = mutableListOf<MutableList<View>>()
         val start = page * groupSize
         val end = minOf((page + 1) * groupSize, state.episodeCount)
         val targetFocus = focusEpisode ?: state.current
@@ -360,6 +379,7 @@ class PlayerSidebar(
                     "${index + 1}",
                     currentEpisode = index == state.current,
                     compact = false,
+                    focusKey = "episode:$index",
                 ) {
                     if (index == state.current) dismiss() else selectEpisode(index)
                 }.apply {
@@ -385,10 +405,84 @@ class PlayerSidebar(
                 view.nextFocusLeftId = pageViews[(index - 1 + pageViews.size) % pageViews.size].id
                 view.nextFocusRightId = pageViews[(index + 1) % pageViews.size].id
             }
-            rows.add(0, pageViews)
+            // Keep the focus rows in the same top-to-bottom order as the visuals:
+            // optional series strip, page group strip, then the episode grid.
+            rows.add(if (rows.isEmpty()) 0 else 1, pageViews)
         }
         firstFocus = firstFocus ?: rows.firstOrNull()?.firstOrNull()
         return rows
+    }
+
+    private fun buildSeries(body: LinearLayout): MutableList<View>? {
+        val seasons = state.series.takeIf { it.size > 1 } ?: return null
+        val heading = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), 0, 0, dp(7))
+        }
+        heading.addView(label("系列剧", 12f, accentSoft))
+        heading.addView(
+            label("共 ${seasons.size} 季 · 左右切换", 10.5f, muted).apply {
+                setPadding(dp(8), 0, 0, 0)
+            },
+        )
+        body.addView(heading)
+        val scroll = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val line = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val items = mutableListOf<View>()
+        seasons.forEach { work ->
+            val current = work.series.id == state.seriesId
+            val status = when {
+                current -> "本剧"
+                work.upcoming -> "待上线"
+                else -> work.series.badge.trim().ifBlank { "已上线" }
+            }
+            val item = chip(
+                "${work.season.ifBlank { "本剧" }} · $status",
+                selected = current,
+                currentEpisode = current,
+                compact = true,
+                focusKey = "series:${work.series.id}",
+                onFocused = { reveal(scroll, it) },
+            )
+            item.maxLines = 1
+            item.ellipsize = TextUtils.TruncateAt.END
+            item.contentDescription =
+                "${work.season.ifBlank { "本剧" }}，${work.series.title}，$status"
+            item.setOnClickListener { selectSeries(work, item) }
+            line.addView(item, LinearLayout.LayoutParams(dp(136), dp(32)).apply {
+                if (items.isNotEmpty()) leftMargin = dp(6)
+            })
+            items += item
+        }
+        scroll.addView(
+            line,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        body.addView(scroll, LinearLayout.LayoutParams(-1, dp(32)).apply { bottomMargin = dp(12) })
+        return items
+    }
+
+    private fun reveal(scroll: HorizontalScrollView, view: View) {
+        scroll.post {
+            val left = scroll.scrollX
+            val right = left + scroll.width
+            val target = when {
+                view.left < left -> view.left
+                view.right > right -> view.right - scroll.width
+                else -> left
+            }
+            if (target != left) scroll.smoothScrollTo(target.coerceAtLeast(0), 0)
+        }
     }
 
     private fun settingRow(
@@ -408,13 +502,18 @@ class PlayerSidebar(
         val choices = mutableListOf<View>()
         var selectedIndex = selected
         val chipViews = values.mapIndexed { index, value ->
-            chip(value, selected = index == selectedIndex, compact = true) {
+            chip(
+                value,
+                selected = index == selectedIndex,
+                compact = true,
+                focusKey = "setting:$title:$index",
+            ) {
                 if (selectedIndex != index) {
                     selectedIndex = index
                     onPick(index)
                     if (dialog.isShowing) {
                         render()
-                        dialog.window?.decorView?.post { firstFocus?.requestFocus() }
+                        restoreFocusAfterRender()
                     }
                 }
             }
@@ -510,7 +609,11 @@ class PlayerSidebar(
         val sleepRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         sleepRow.addView(label("定时停止", 12f, muted), LinearLayout.LayoutParams(dp(76), -2))
         lateinit var sleep: TextView
-        sleep = chip("定时 ${state.sleepLabel}", compact = true) { openSleep(sleep) }
+        sleep = chip(
+            "定时 ${state.sleepLabel}",
+            compact = true,
+            focusKey = "setting:sleep",
+        ) { openSleep(sleep) }
         sleepRow.addView(sleep, LinearLayout.LayoutParams(0, dp(30), 1f))
         body.addView(sleepRow, LinearLayout.LayoutParams(-1, dp(36)))
         rows += mutableListOf(sleep)
@@ -519,8 +622,8 @@ class PlayerSidebar(
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, 0)
         }
-        val restartChip = chip("从头播放", compact = true) { restart() }
-        val resetChip = chip("重置设备能力记录", compact = true) { resetCapabilities() }
+        val restartChip = chip("从头播放", compact = true, focusKey = "setting:restart") { restart() }
+        val resetChip = chip("重置设备能力记录", compact = true, focusKey = "setting:reset") { resetCapabilities() }
         actionRow.addView(restartChip, LinearLayout.LayoutParams(0, dp(32), 1f).apply { rightMargin = dp(6) })
         actionRow.addView(resetChip, LinearLayout.LayoutParams(0, dp(32), 1f))
         body.addView(actionRow)

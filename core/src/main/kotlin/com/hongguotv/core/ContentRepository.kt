@@ -535,6 +535,75 @@ class ContentRepository(
         return SearchSuggest.nameSearchDramas(records)
     }
 
+    // ---------- official related works / seasons ----------
+
+    private val relatedCache = linkedMapOf<String, List<RelatedWork>>()
+
+    /**
+     * Platform "相关作品" rows for the current drama. This is the authoritative
+     * season/same-IP list behind the phone app's series selector; title matching
+     * cannot recover sibling titles that use a different subtitle.
+     *
+     * Public GET, no account credentials. The upstream protocol pins 7.2.2.32 and
+     * retries the three equivalent API hosts on an empty or rejected response.
+     */
+    fun related(id: String, force: Boolean = false): List<RelatedWork> {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        if (!force) synchronized(relatedCache) {
+            relatedCache[id]?.let { return it }
+        }
+        val identity = playbackSession.profile(http)
+        val values = identity.values.toMutableMap().apply {
+            putAll(mapOf(
+                "scene" to "10",
+                "from" to "detail_page_more_related",
+                "book_id" to id,
+                "new_search_middle_page" to "false",
+                "bookstore_tab_type" to "0",
+                "query_history_removed" to "false",
+                "user_is_login" to "0",
+                "bookstore_tab" to "0",
+                "search_middle_page_version" to "0",
+                "pad_column_detail" to "0",
+                "hot_word_exchange" to "false",
+                "device_level" to "3",
+                "limit" to "0",
+                "offset" to "0",
+                "is_horizontal_screen" to "false",
+                "reader_single_col_from_ip_strategy" to "false",
+                "ts" to (clock() / 1000).toString(),
+            ))
+        }
+        var lastFailure: Exception? = null
+        for (host in RELATED_HOSTS) {
+            try {
+                val signed = appApi.sign(
+                    "https://$host/reading/bookapi/plan/v:version/",
+                    values,
+                    null,
+                    VendorConstants.APP_UA,
+                    versionCode = "72232",
+                    versionName = "7.2.2.32",
+                )
+                val headers = signed.headers.toMutableMap()
+                if (identity.cookie.isNotBlank()) headers["Cookie"] = identity.cookie
+                val rows = RelatedWorks.parse(
+                    appApi.requestUrl(signed.url, null, headers),
+                    id,
+                )
+                synchronized(relatedCache) {
+                    if (relatedCache.size >= 8) relatedCache.remove(relatedCache.keys.first())
+                    relatedCache[id] = rows
+                }
+                return rows
+            } catch (problem: Exception) {
+                if (Thread.currentThread().isInterrupted) throw problem
+                lastFailure = problem
+            }
+        }
+        throw IOException("相关剧集暂时无法加载，请重试", lastFailure)
+    }
+
     // ---------- related series (season siblings, search-backed) ----------
 
     /**
@@ -778,6 +847,11 @@ class ContentRepository(
 
     companion object {
         private val logger = java.util.logging.Logger.getLogger("com.hongguotv.core.stream")
+        private val RELATED_HOSTS = listOf(
+            "api5-normal-sinfonlinec.fqnovel.com",
+            "api5-normal-hl.fqnovel.com",
+            "api5-normal-lf.fqnovel.com",
+        )
         private const val DETAIL_ENDPOINT =
             "https://reading.snssdk.com/novel/player/multi_video_detail/preload/v1"
 

@@ -115,10 +115,17 @@ internal class AppApiTransport(
      * Argus/Ladon ports over the FINAL query string; x-khronos must share its time
      * source with the URL's _rticket or the signature and query disagree.
      */
-    fun sign(base: String, values: Map<String, String>, body: ByteArray?, ua: String): Signer.Request {
+    fun sign(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray?,
+        ua: String,
+        versionCode: String = "73932",
+        versionName: String = "7.3.9.32",
+    ): Signer.Request {
         val pinned = values.toMutableMap().apply {
-            for (k in listOf("version_code","manifest_version_code","update_version_code","pv_player")) this[k] = "73932"
-            this["version_name"] = "7.3.9.32"
+            for (k in listOf("version_code","manifest_version_code","update_version_code","pv_player")) this[k] = versionCode
+            this["version_name"] = versionName
         }
         val signed = signer.signPlayback(base, pinned, body, ua)
         val query = signed.url.substringAfter('?', "")

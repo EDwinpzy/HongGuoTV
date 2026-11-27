@@ -923,6 +923,38 @@ class ContentRepositoryTest {
         assertEquals(2,SearchSuggest.parseChineseNumber("两"))
     }
 
+    @Test fun relatedUsesOfficialSeriesEndpointAndCaches() {
+        val requests=mutableListOf<Request>()
+        val payload="""{"code":0,"data":[{"show_type":547,"cell_name":"相关作品","video_data":[
+            {"series_id":"701","title":"同系列第二季","cover":"https://example.com/2.jpg",
+             "content_type":1004,"episode_cnt":60,"season_index":2,"tag_info":{"text":"第2季"}},
+            {"series_id":"700","title":"当前季","content_type":1004,"episode_cnt":80,"season_index":1},
+            {"series_id":"702","title":"同系列第三季","cover":"https://example.com/3.jpg",
+             "content_type":1004,"episode_cnt":40,"season_index":3},
+            {"series_id":"703","title":"原著小说","content_type":1,"episode_cnt":20},
+            {"series_id":"704","title":"待上线季","content_type":1007,"season_index":4}
+        ]}]}"""
+        val repo=repository { request ->
+            requests+=request
+            payload
+        }
+        val rows=repo.related("700")
+        assertEquals(listOf("701","702","704"),rows.map { it.series.id })
+        assertEquals("第2季",rows.first().season)
+        assertEquals("全 60 集",rows.first().series.badge)
+        val request=requests.single()
+        assertEquals("api5-normal-sinfonlinec.fqnovel.com",request.url.host)
+        assertEquals("/reading/bookapi/plan/v:version/",request.url.encodedPath)
+        assertEquals("10",request.url.queryParameter("scene"))
+        assertEquals("detail_page_more_related",request.url.queryParameter("from"))
+        assertEquals("700",request.url.queryParameter("book_id"))
+        assertEquals("72232",request.url.queryParameter("version_code"))
+        assertEquals("7.2.2.32",request.url.queryParameter("version_name"))
+        assertTrue(request.header("x-argus").orEmpty().isNotBlank())
+        assertEquals(rows,repo.related("700"))
+        assertEquals(1,requests.size)
+    }
+
     @Test fun seasonQueriesFindMissingSeasons() {
         val dramas=listOf(Series("1","暴富：山城故事第2季"),Series("2","暴富：山城故事第3季"),Series("3","无关剧集"))
         val queries=SearchSuggest.seasonQueries("暴富",dramas)

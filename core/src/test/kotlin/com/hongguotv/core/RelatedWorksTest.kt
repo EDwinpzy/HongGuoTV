@@ -96,6 +96,47 @@ class RelatedWorksTest {
     }
 
     @Test
+    fun playerSeasonsKeepOnlySameTitleSeasonsAndPreferOfficialEntries() {
+        val current = Series("10", "持械入宋：第二季")
+        val rows = listOf(
+            RelatedWork(Series("1", "持械入宋：第一季"), "第1季", false, 1),
+            RelatedWork(Series("2", "持械入宋第二季"), "同IP", false, 2),
+            RelatedWork(Series("3", "持械入宋：第三季"), "第3季", false, 3),
+            RelatedWork(Series("4", "持械入宋：第四季"), "同IP", false, 4),
+            RelatedWork(Series("5", "持械入宋：第四季"), "第4季", true, 4),
+            RelatedWork(Series("6", "持械入宋：宣和铁骑第二季"), "同IP", false, 2),
+            RelatedWork(Series("7", "持械入宋：1000集山河长卷"), "同IP", false, 1),
+            RelatedWork(Series("8", "持械入宋：第五季"), "同IP", false, 5),
+            RelatedWork(Series("9", "持械入宋：第五季"), "第5季", false, 5),
+        )
+        val seasons = RelatedWorks.seasons(current, rows)
+        assertEquals(listOf("1", "10", "3", "5", "9"), seasons.map { it.series.id })
+        assertEquals((1..5).map { "第${it}季" }, seasons.map { it.season })
+        assertEquals("持械入宋：第二季", seasons[1].series.title)
+        assertTrue(seasons[3].upcoming)
+    }
+
+    @Test
+    fun playerSeasonsAcceptUnmarkedSeasonOneAndIgnoreSameIpSpinoffs() {
+        val current = Series("100", "全球死考：刚下刑场你让我去考试一季")
+        val rows = listOf(
+            RelatedWork(Series("101", "全球死考：刚下刑场你让我去考试"), "同IP", false, 0),
+            RelatedWork(Series("102", "全球死考：刚下刑场你让我去考试第二季"), "同IP", false, 2),
+            RelatedWork(Series("103", "全球死考：刚下刑场你让我去考试二季"), "第2季", false, 2),
+            RelatedWork(Series("104", "全球死考：刚下刑场你让我去考试三季"), "第3季", false, 3),
+            RelatedWork(Series("105", "全球死考：刚下刑场你让我去考试3D版"), "同IP", false, 0),
+            RelatedWork(Series("106", "全球死考：刚下刑场你让我去考试无限求生"), "同IP", false, 0),
+        )
+        val seasons = RelatedWorks.seasons(current, rows)
+        assertEquals(listOf("100", "103", "104"), seasons.map { it.series.id })
+        assertEquals(listOf("第1季", "第2季", "第3季"), seasons.map { it.season })
+        assertEquals(
+            listOf("100"),
+            RelatedWorks.seasons(Series("100", "狩妖传：天道之子"), emptyList()).map { it.series.id },
+        )
+    }
+
+    @Test
     fun subscriptionOnlyWritesRequestedFutureSeriesWithNumericIdAndCompressedJson() {
         var calls = 0
         val client =

@@ -18,7 +18,8 @@ data class RelatedWork(val series: Series, val season: String, val upcoming: Boo
  * are actionable; novels/audio are intentionally excluded.
  */
 object RelatedWorks {
-    private val seasonSuffix = Regex("第?([0-9零〇一二两三四五六七八九十百]+)季$")
+    private val seasonSuffix = Regex("第?([0-9零〇一二两三四五六七八九十百]+)季[\\p{P}\\p{Z}\\s]*$")
+    private val seasonTag = Regex("第\\s*([0-9零〇一二两三四五六七八九十百]+)\\s*季")
 
     private fun seasonNumber(value: String): Int? {
         value.toIntOrNull()?.let { return it.takeIf { n -> n > 0 } }
@@ -45,6 +46,58 @@ object RelatedWorks {
                 ?: 1 }
     )
 
+    /**
+     * Actual seasons belonging to the current series, one row per season.
+     *
+     * The related-work cell mixes official seasons with same-IP spin-offs and duplicate
+     * uploads. Keep only rows whose title shares the current title's season-stripped stem,
+     * then collapse duplicates by season number. Official `第N季` tags win over a generic
+     * `同IP` label; a playable duplicate wins over an unpublished one.
+     *
+     * [includeCurrent] adds the current series as its own season so the player sidebar can
+     * mark "本剧" and still offer the surrounding seasons. A series with no siblings returns
+     * either an empty list or only the current row.
+     */
+    fun seasons(
+        current: Series,
+        rows: List<RelatedWork>,
+        includeCurrent: Boolean = true,
+    ): List<RelatedWork> {
+        val currentStem = stem(current.title)
+        if (currentStem.isBlank()) return emptyList()
+        val currentSeason = seasonFromTitle(current.title) ?: 1
+        val grouped = linkedMapOf<Int, MutableList<Pair<RelatedWork, Boolean>>>()
+        if (includeCurrent) {
+            val own = RelatedWork(current, "第${currentSeason}季", false, currentSeason)
+            grouped.getOrPut(currentSeason) { mutableListOf() } += own to true
+        }
+        rows.forEach { row ->
+            if (row.series.id == current.id || stem(row.series.title) != currentStem) return@forEach
+            val season = seasonFromTag(row.season) ?: seasonFromTitle(row.series.title) ?: 1
+            grouped.getOrPut(season) { mutableListOf() } += row to false
+        }
+        return grouped.entries
+            .sortedBy { it.key }
+            .map { (season, candidates) ->
+                val picked = candidates
+                    .sortedWith(
+                        compareBy<Pair<RelatedWork, Boolean>> { (row, own) ->
+                            when {
+                                own -> 0
+                                seasonFromTag(row.season) == season -> 1
+                                else -> 2
+                            }
+                        }
+                            .thenBy { (row, _) -> if (row.upcoming) 1 else 0 }
+                            .thenBy { (row, _) -> titleSeason(row.series.title)?.let { 0 } ?: 1 }
+                            .thenBy { (row, _) -> row.series.title.length }
+                            .thenBy { (row, _) -> row.series.id }
+                    )
+                    .first().first
+                picked.copy(season = "第${season}季", seasonIndex = season)
+            }
+    }
+
     /** Conservative: identical title stem, consecutive season, unique playable candidate. */
     fun nextSeason(current: Series, rows: List<RelatedWork>): RelatedWork? {
         val title = current.title.trim()
@@ -63,8 +116,9 @@ object RelatedWorks {
         }.singleOrNull()
     }
 
-    fun parse(raw: String, currentId: String): List<RelatedWork> {
-        val root = JSONObject(raw)
+    fun parse(raw: String, currentId: String): List<RelatedWork> = parse(JSONObject(raw), currentId)
+
+    fun parse(root: JSONObject, currentId: String): List<RelatedWork> {
         if (root.optInt("code", -1) != 0) throw IOException("相关作品接口暂不可用")
         val cells = root.optJSONArray("data") ?: throw IOException("相关作品数据格式已变化")
         return cells
@@ -105,4 +159,12 @@ object RelatedWorks {
             .distinctBy { it.series.id }
             .sortedWith(compareBy<RelatedWork> { it.seasonIndex.takeIf { n -> n > 0 } ?: Int.MAX_VALUE })
     }
+
+    private fun seasonFromTag(value: String): Int? =
+        seasonTag.find(value)?.groupValues?.get(1)?.let(::seasonNumber)
+
+    private fun seasonFromTitle(value: String): Int? =
+        seasonSuffix.find(value.trim())?.groupValues?.get(1)?.let(::seasonNumber)
+
+    private fun titleSeason(value: String): Int? = seasonFromTitle(value)
 }
