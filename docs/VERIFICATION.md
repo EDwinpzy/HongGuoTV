@@ -927,3 +927,28 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 失败可观测 | PASS（代码） | 下载失败、非 2xx、解码失败、慢于 1.5 秒的封面都会写 `HongguoTV` WARN 日志 |
 
 限制：解码器泄漏的客户端没有定位（重启后 `mediacodec` 计数清零）；若再次出现封面全空，先看 `top` 里的 `mediacodec` 和 `dumpsys media.codec` 客户端，而不是重复清缓存。图片重试逻辑未在故障现场复现，只验证了正常网络下不影响出图。
+
+## 2026-11-28 v1.1.29 推荐去重、DNS 自动恢复与封面重试正式发布（Release 实机）
+
+版本为 `1.1.29 / 10129`，基于任务分支 `codex/release-v1.1.29` 的发布构建，包含 `v1.1.28`、推荐标题族去重、DNS 失败静默重试和封面加载失败重试；本轮未合并 `main`。正式包使用原有签名覆盖安装到 JMGO S621，首次安装时间仍为 `2026-11-22 15:03:54`，应用数据与账号登录态保留。
+
+本次发布包含：
+
+- 推荐流同时按 `series_id` 与去季号/标点后的标题族去重，官方以不同 ID 返回的同一剧不同季不会再连续出现；已展示记录本地保留 7 天，应用重启后不重放。
+- `UnknownHostException` 纳入瞬时播放故障，先按 1s / 2.5s / 5s 静默重试；只有三次恢复耗尽后才显示失败面板，并明确提示检查网络或 DNS。
+- 封面下载或解码失败后 3 秒自动重试一次；非 2xx、下载异常、解码失败和慢请求写入 `HongguoTV` WARN 日志，便于继续定位设备过载。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 完整干净门禁 | PASS | `clean :core:test :app:testDebugUnitTest :app:lintVitalRelease :app:assembleRelease :app:bundleRelease --no-build-cache` 通过；313 项测试、0 失败、0 错误、12 跳过（显式联网探针） |
+| 版本与签名 | PASS | `aapt2` 读取 `versionCode=10129 / versionName=1.1.29`；APK v2 签名通过，证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`，与已发布版本一致 |
+| S621 覆盖安装 | PASS | `adb install -r` 返回 Success；版本升级到 `1.1.29 / 10129`，首次安装时间与应用数据保留，最后更新时间 `2026-11-28 06:34:35` |
+| 首页与 AI 剧封面 | PASS（实机） | Release 首页“接着看”和短剧货架封面正常；AI 剧页两排 14 张封面全部显示，不再只剩标题和集数 |
+| 推荐第二页去重 | PASS（实机） | 连续下移到批次尾并自动续页，日志为 `Recommendation page=2 raw=6 fresh=6 duplicates=`，第二页 6 条全部为新剧集 |
+| 重启后不重放 | PASS（实机） | 强制停止并冷启动后再次进入推荐，首批 `items=5 fresh=true first=7671288964023602238`；与重启前首批 `first=7706577334110784537` 不同，未重放旧内容 |
+| 推荐播放 | PASS（实机） | 首批自动选择 `1080P/bytevc1/1920x1080`，`Playback first frame episode=1`；重启后再次自动出画，未进入失败面板 |
+| 崩溃与 ANR | PASS | `crash` buffer 与 `dumpsys activity lastanr` 均无目标应用记录；冷启动约 625 ms，进程保持前台 |
+| APK 产物 | PASS | `hongguotv-1.1.29.apk`，3,003,669 bytes，SHA-256 `508BF402324968CB3F1D55247C01CB9EC94A2E84FD9060B3F9186A6F0AD430CE` |
+| AAB 产物 | PASS | `hongguotv-1.1.29.aab`，4,430,512 bytes，SHA-256 `F706CD66FE23E7393785E87F808BD7B57B22507F39643A23F891FEE22B108FC8`；`jarsigner -verify` 通过 |
+
+限制：设备输入和截图来自 ADB 注入，不是物理遥控器。DNS 断链无法在不影响 ADB 无线连接的前提下稳定注入，本轮“DNS → 静默重试 → 恢复”链路由单测和代码路径覆盖，未做真机故障注入；封面 3 秒重试也没有在解码器过载现场复现，只验证正式包在正常网络下不影响出图。S621 的媒体解码器高负载来源仍未定位，设备测试结束后系统 `loadavg` 仍偏高；若封面再次整页空白，应先检查 `mediacodec` 客户端和系统负载，而不是清空应用缓存。
