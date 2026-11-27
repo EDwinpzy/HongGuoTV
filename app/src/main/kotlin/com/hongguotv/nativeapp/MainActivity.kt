@@ -37,6 +37,7 @@ class MainActivity: Activity() {
         const val PREFETCH_BUFFER_NEAR_MS=10_000L
         const val PREFETCH_BUFFER_FAR_MS=25_000L
         const val PREFETCH_BUFFER_PAUSE_MS=15_000L
+        const val PLAYER_CONTROLS_AUTO_HIDE_MS=4_000L
         const val DANMAKU_EMPTY_PAGE_RETRIES=3
     }
     private val bg=TvStyle.background; private val surface=TvStyle.surface
@@ -361,6 +362,17 @@ class MainActivity: Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel=false
+    private val autoHidePlaybackControls: Runnable=object: Runnable {
+        override fun run() {
+            if(!playbackControlsMayAutoHide()) return
+            if(playerSidebar!=null || speedDialog?.isShowing==true || tvTools.showing || !hasWindowFocus()) {
+                main.postDelayed(autoHidePlaybackControls,PLAYER_CONTROLS_AUTO_HIDE_MS)
+                return
+            }
+            android.util.Log.i("HongguoTV","Playback controls auto-hidden")
+            hidePlaybackOverlay()
+        }
+    }
     private var transportPlay: ImageView?=null
     private var sleepButton: TextView?=null
     private var speedDialog: android.app.Dialog?=null
@@ -2937,6 +2949,7 @@ class MainActivity: Activity() {
                 }
                 override fun onIsPlayingChanged(playing: Boolean) {
                     if(!active()) return
+                    if(playing) schedulePlaybackControlsAutoHide() else cancelPlaybackControlsAutoHide()
                     if(playing && firstFrame && firstFrameWatchdog==null) {
                         firstFrameWatchdog=watchdog
                         main.postDelayed(watchdog, 12_000L)
@@ -3263,6 +3276,7 @@ class MainActivity: Activity() {
         }
         revealPlaybackVideo()
         playError=true
+        cancelPlaybackControlsAutoHide()
         hideRecommendationInfo()
         player?.pause(); progressBar.visibility=View.GONE; playbackSpinner?.visibility=View.GONE
         playbackText.visibility=View.VISIBLE
@@ -3316,9 +3330,18 @@ class MainActivity: Activity() {
         android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else ""))
     }
     private fun hidePlaybackOverlay() {
+        cancelPlaybackControlsAutoHide()
         panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
         playerChannelNav?.visibility=if(recommendationFeedMode) View.VISIBLE else View.GONE
     }
+    private fun playbackControlsMayAutoHide()=
+        screen=="player" && !recommendationFeedMode && !playError && panel &&
+            hud.visibility==View.VISIBLE && player?.isPlaying==true
+    private fun schedulePlaybackControlsAutoHide() {
+        main.removeCallbacks(autoHidePlaybackControls)
+        if(playbackControlsMayAutoHide()) main.postDelayed(autoHidePlaybackControls,PLAYER_CONTROLS_AUTO_HIDE_MS)
+    }
+    private fun cancelPlaybackControlsAutoHide() { main.removeCallbacks(autoHidePlaybackControls) }
     /**
      * Recommendation preview stays visually separate from the normal player: title and
      * synopsis are always visible, while OK hands the current stream over to the normal
@@ -3360,6 +3383,7 @@ class MainActivity: Activity() {
         progressBar.visibility=View.VISIBLE
         playerChannelNav?.visibility=View.GONE
         updatePlaybackText()
+        schedulePlaybackControlsAutoHide()
     }
     /** video-pro style transport: one play button, elapsed / scrubber / remaining. */
     private fun buildPlaybackControls() {
@@ -3431,6 +3455,7 @@ class MainActivity: Activity() {
         if(!play) { player?.pause(); retryAutoplay=false; saveProgress() }
         else if(playError) { playEpisode(episodeIndex,retryPosition,true); return }
         else if(playerSidebar==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
+        if(!play) cancelPlaybackControlsAutoHide()
         if(!play) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if(hud.visibility==View.VISIBLE) updatePlaybackText()
@@ -3845,7 +3870,7 @@ class MainActivity: Activity() {
         )
     }
     private fun releasePlayer() {
-        cancelRecovery(); cancelPrefetch(); mediaSession.deactivate(); tvTools.close()
+        cancelRecovery(); cancelPrefetch(); cancelPlaybackControlsAutoHide(); mediaSession.deactivate(); tvTools.close()
         firstFrameWatchdog?.let { main.removeCallbacks(it) }
         firstFrameWatchdog=null
         hideRecommendationInfo()
@@ -3974,6 +3999,7 @@ class MainActivity: Activity() {
     @Deprecated("TV remote back is handled through the activity")
     override fun onBackPressed()=goBack()
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if(screen=="player" && panel && event.action==KeyEvent.ACTION_DOWN) schedulePlaybackControlsAutoHide()
         if(event.action==KeyEvent.ACTION_DOWN && event.keyCode!=KeyEvent.KEYCODE_BACK) {
             exitArmed=false
             main.removeCallbacks(disarmExit)
@@ -4091,7 +4117,7 @@ class MainActivity: Activity() {
     }
     override fun onPause() {
         updater.pause()
-        foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
+        foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); cancelPlaybackControlsAutoHide(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true
         player?.pause(); saveProgress(); library.flush(); super.onPause()
     }
