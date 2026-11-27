@@ -740,3 +740,41 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 产物：APK SHA-256 `6D1033C6EF095D1B9A7EBFCFBFFEE1FB93D307B7BC2F8084564779D9F86E34F9`；AAB SHA-256 `4C010F0A24C84AD644227DD94BF33BCE2E1BBC7FB0FC01468CC26F9887B80123`。
 
 限制：设备输入与截图均来自 ADB 注入，不能替代投影幕布上的人工长时间观察；未覆盖弱网、备用设备在真实风控下的命中、数小时连播和其他 TV 型号。
+
+## 2026-11-27 播放超时无感重试（Debug 实机）
+
+验证分支为 `codex/playback-silent-timeout-retry`，基于 `v1.1.25 / 80bb3b8`。S621 覆盖安装同签名 Debug `1.1.25 / 10125`，应用数据与观看进度保留；设备输入均为 ADB 注入，不是物理遥控器。
+
+根因：S621 的 `c2.mtk.hevc.decoder` 在 1080P HEVC 中途偶发 `previous call to queue exceeded timeout`，Media3 随后报 `ERROR_CODE_DECODING_FAILED`。旧逻辑先显示完整错误面板，再依赖恢复倒计时；单档 1080P 时也无法自动降档。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 旧版失败基线 | FAIL | 用户实拍 `1.1.25` 显示“电视无法解码当前视频”及 `恢复 0/3 · exo=ERROR_CODE_DECODING_FAILED` |
+| 错误分类 | PASS（单测） | 网络超时、Media3 timeout、解码器错误均归类为瞬时恢复；容器损坏与无可用档位保持确定性失败 |
+| 无感重建 | PASS（实机） | `19:41:34.580` MTK 解码器 `queue exceeded timeout`，`19:41:35.522` 记录 `Silent playback recovery scheduled (attempt 1/3)`，`19:41:36.546` 在 `57501ms` 原地重建播放器并继续出画；未进入错误面板 |
+| 恢复后 HUD | PASS（实机） | 修复静默恢复把进度条设为 `GONE` 后未恢复的问题；播放器回到 `READY` 或重新打开 HUD 时恢复进度条，S621 截图确认 `00:25` / `-00:34` 与进度轨道正常显示 |
+| 自动降档决策 | PASS（单测） | 1080P → 720P、720P → 480P；不修改用户保存的清晰度设置。本轮 1080P 首次重建已恢复，未在实机命中降档分支 |
+| 回归与 Debug 构建 | PASS | `:app:testDebugUnitTest`（32 项）与 `:app:assembleDebug` 通过 |
+
+限制：本轮只安装 Debug 包，未生成 Release；自动降档和连续 3 次恢复耗尽后的兜底只由单测覆盖。设备输入和截图来自 ADB 注入，未覆盖数小时连播、弱网、其他 TV 型号。
+
+## 2026-11-27 弹幕空页恢复（Debug 实机）
+
+用户反馈播放中的弹幕消失。排查确认不是弹幕层被关闭：`1.1.25` 实机日志显示，当前集请求 HTTP 成功后返回 `items=0 next=60s more=false`，旧逻辑立即把该集判定为已到片尾，后续不再请求。
+
+同一集 60 秒窗口的 JVM 签名探测出现完全相同的空页：解析结果为 `items=0 total=0 more=false`；紧接着对同一地址重新签名请求，返回了真实弹幕。服务端的 `common_list_info.cursor` 仍包含 `danmaku_window_count`（如 `0:1`、`30000:9`），说明“本页空”是瞬时响应，而不是该集没有评论。
+
+修复为：
+
+- `DanmakuPage` 同时保留 `total` 和服务端 cursor 中当前窗口的 `danmaku_window_count`。
+- 当本页为空但服务端声明该窗口有评论时，不推进时间游标，原地重试同一窗口 3 次（1/2/4 秒退避）；成功拿到数据后恢复正常分页。
+- 增加空页判定和 cursor 计数解析单测，保留真正无评论时的终页行为。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 瞬时空页复现 | PASS（接口） | 当前集 60 秒窗口首次请求 `items=0 total=0 more=false`；立即重试收到真实评论，证明旧逻辑会提前结束 |
+| 空页重试判定 | PASS（单测） | `total=0` 但 cursor 的当前窗口计数大于 0 时判定为可重试；无 cursor、无计数时保持终页 |
+| S621 真实弹幕 | PASS（实机） | 覆盖安装最新 Debug 后，日志出现 `Danmaku window=0s items=35 next=30s cursor=true more=true duration=123s`，后续窗口继续取到 19、24 条；截图可见多条滚动弹幕 |
+| 回归与 Debug 构建 | PASS | `:core:test` 相关测试、`:app:testDebugUnitTest`、`:app:assembleDebug` 通过 |
+
+限制：空页重试的实机分支受服务端瞬时响应影响，当前实机样本主要证明正常分页和可见弹幕；1/2/4 秒重试循环由代码与单测覆盖。设备输入为 ADB 注入，未覆盖数小时连播、弱网及其他 TV 型号。

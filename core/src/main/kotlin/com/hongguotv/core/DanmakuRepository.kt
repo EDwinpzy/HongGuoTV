@@ -18,7 +18,13 @@ data class DanmakuPage(
     val nextCursorMs: Long,
     val cursor: String = "",
     val hasMore: Boolean = false,
-)
+    val total: Int = -1,
+    val windowCommentCount: Int = -1,
+) {
+    /** The server knows comments exist, but this response did not materialize any. */
+    fun isEmptyButHasComments(): Boolean =
+        items.isEmpty() && (windowCommentCount > 0 || total > 0)
+}
 
 /**
  * Danmaku list client: POST /novel/commentapi/comment/list/{videoID}/v1/
@@ -363,12 +369,23 @@ internal class DanmakuRepository(
             val responseData = data.optJSONObject("data")
             val next = responseData?.optJSONObject("extra")?.optLong("next_query_danmaku_list_time", -1L) ?: -1L
             val listInfo = responseData?.optJSONObject("common_list_info")
+            val cursor = listInfo?.str("cursor") ?: ""
             DanmakuPage(
                 items,
                 next,
-                listInfo?.str("cursor") ?: "",
+                cursor,
                 listInfo?.optBoolean("has_more", false) ?: false,
+                listInfo?.optInt("total", -1) ?: -1,
+                windowCommentCount(cursor, startOffsetMs),
             )
         }
+    }
+
+    private fun windowCommentCount(cursor: String, startOffsetMs: Long): Int {
+        if(cursor.isEmpty()) return -1
+        val json=runCatching { JSONObject(cursor) }.getOrNull() ?: return -1
+        val windows=json.optJSONObject("danmaku_window_count")
+        if(windows!=null) return windows.optInt((startOffsetMs/1000).toString(), 0)
+        return json.optInt("danmaku_count", -1)
     }
 }
