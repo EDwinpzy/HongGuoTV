@@ -819,3 +819,26 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 回归 | PASS | `:app:testDebugUnitTest` 与 `:app:assembleDebug` 通过，无 `FATAL EXCEPTION` / ANR |
 
 限制：只验证 S621 与当前播放样本；设备输入和截图来自 ADB 注入。弹层延后收起由代码路径与实机暂停场景覆盖，未逐一测试所有设置弹层。
+
+## 2026-11-27 v1.1.27 自动隐藏与静默上传正式发布（Release 实机）
+
+版本为 `1.1.27 / 10127`，基于任务分支 `codex/playback-silent-timeout-retry` 的发布构建；本轮未合并 `main`。正式包使用原有签名，覆盖安装到 JMGO S621，首次安装时间仍为 `2026-11-22 15:03:54`，应用数据与账号登录态保留。
+
+本次发布包含：
+
+- 正常播放器控制层在播放中最后一次呼出或按键后 4 秒自动收起；暂停、缓冲、错误和弹层打开时不隐藏。
+- 自动播放进度与批量观看记录上传失败不再弹悬浮 Toast，只保留账号页状态和日志；后台重试逻辑不变。
+- 同步更新 README 中的播放器控制与账号同步行为说明。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 完整门禁 | PASS | `:core:test`、`:app:testDebugUnitTest`、`:app:lintVitalRelease`、`:app:assembleRelease`、`:app:bundleRelease` 通过 |
+| 版本与签名 | PASS | `aapt2` 读取 `versionCode=10127 / versionName=1.1.27`；证书 SHA-256 `403BDDBE570501BB7B1081DF340D92F4750F8CDA69231C563B1D1BD07A3F13A5`，与已发布版本一致 |
+| S621 覆盖安装 | PASS | `adb install -r` 返回 Success；版本升级到 `1.1.27`，首次安装时间与应用数据保留 |
+| Release 播放冒烟 | PASS | 预取切集连续出画，日志记录 `Playback first frame episode=54`；账号播放进度上传返回成功 |
+| 控制层自动收起 | PASS（实机） | `21:43:18` 记录 `Playback controls auto-hidden`；截图仅保留视频与弹幕 |
+| 上传失败悬浮提示 | PASS（代码路径） | 自动进度与批量观看记录失败路径不再调用 Toast；失败只更新账号状态并写日志，后续同步继续重试 |
+| APK 产物 | PASS | `hongguotv-1.1.27.apk`，SHA-256 `6BE466864F84BA901D04A0FD94922D016F07141CD070FFA30AD2DAC70146726D` |
+| AAB 产物 | PASS | `hongguotv-1.1.27.aab`，SHA-256 `753F11BBB95BDEFDCDDDA1B48F361AD394686319ECD766EFD6A4B3C18537F3E4` |
+
+限制：设备输入和截图来自 ADB 注入，不是物理遥控器；上传失败提示移除由源码路径和构建门禁验证，未在实机人为切断账号接口模拟真实失败。未覆盖弱网、数小时连播和其他 TV 型号。
