@@ -79,7 +79,14 @@ internal class MobilePlaybackStreamSource(
         } catch (empty: EmptyPlaybackResponseException) {
             // Same identity, current profile: the GET is the server's documented
             // fallback when the primary preload path answers a zero-byte body.
-            videoTab(id, profile, speculative) ?: throw empty
+            // When this identity is risk-controlled on the GET too, the upstream
+            // desktop client (v1.2.33 SpareDevice) moves to a SPARE device for
+            // the tab read instead of failing the whole episode switch: the spare
+            // identity is registered ahead of time and served immediately, so the
+            // extra attempt costs one GET, not a fresh registration in the path.
+            videoTab(id, profile, speculative)
+                ?: spareTab(id, speculative).takeIf { !speculative }
+                ?: throw empty
         }
     }
 
@@ -198,6 +205,19 @@ internal class MobilePlaybackStreamSource(
             if (tiers.isEmpty()) HedgedCall.Verdict.Empty
             else HedgedCall.Verdict.Usable(tiers)
         }
+    }
+
+    /**
+     * Spare-identity tab read (upstream `SpareDevice`): when the main identity's
+     * GET answered empty on every host, try the SAME tab read once on a device
+     * that was registered ahead of time. The upstream client keeps a small pool
+     * of pre-registered identities for exactly this case; the shield is keyed to
+     * the device id, so a different identity is served while the main one cools.
+     */
+    private fun spareTab(id: String, speculative: Boolean): List<StreamInfo>? {
+        if (Thread.currentThread().isInterrupted) return null
+        val spare = session.spare(http) ?: return null
+        return videoTab(id, spare, speculative)
     }
 
     /** One signed tab GET on [host]; the call inherits the playback budget slice. */
@@ -441,8 +461,11 @@ internal class MobilePlaybackStreamSource(
         const val TAB_PATH = "/reading/bookapi/video_tab/multi_video_model/v1/"
         val TAB_HOSTS = listOf(
             "api5-normal-sinfonlineb.fqnovel.com",
-            "api5-normal-hl.fqnovel.com",
-            "api5-normal-lf.fqnovel.com",
+            // Upstream desktop client v1.2.33 `videoTabModel` orders the tab
+            // hosts as sinfonlineb -> sinfonlinec; hl/lf are POST-only hosts and
+            // answer the GET slower or not at all. The first host that produces a
+            // usable model wins, so the second entry is only a hedge.
+            "api5-normal-sinfonlinec.fqnovel.com",
         )
         /** Stagger between hedge starts; a healthy host answers well inside it. */
         const val HEDGE_DELAY_MS = 1_200L
