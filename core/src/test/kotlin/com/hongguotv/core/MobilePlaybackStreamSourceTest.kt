@@ -12,6 +12,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MobilePlaybackStreamSourceTest {
@@ -140,6 +141,42 @@ class MobilePlaybackStreamSourceTest {
             listOf("mobile-v5", "multi-video-model", "app-api", "web-fallback", "public-mp4"),
             names,
         )
+    }
+
+    /**
+     * Upstream v1.2.33 `SpareDevice`: when the main identity's tab GET answers
+     * empty on every host, the read moves to a pre-registered spare identity
+     * instead of failing the whole episode switch.
+     */
+    @Test
+    fun emptyMainTabAnswersAreRetriedOnASpareIdentity() {
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            requests += request
+            val isSpare = request.url.queryParameter("device_id") == "999999"
+            val body = when {
+                isSpare -> tabResponse()
+                else -> ""
+            }
+            response(request, body)
+        }.build()
+        // The session registers the main identity first and the spare second.
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            if (registrations == 1) DeviceRegister.Registered("123456", "654321")
+            else DeviceRegister.Registered("999999", "888888")
+        }
+        val source = MobilePlaybackStreamSource(http, session, { now }, signer)
+
+        val tiers = source.ladder(episode, 1080, ContentType.SHORT)
+
+        assertEquals("1080P", tiers.single().quality)
+        assertTrue(tiers.single().url.contains("ep4.mp4"))
+        // The spare identity is used only when the main identity's tab fails.
+        val spareUsed = requests.any { it.url.queryParameter("device_id") == "999999" }
+        assertTrue(spareUsed)
     }
 
     private fun tabResponse(): String = JSONObject()

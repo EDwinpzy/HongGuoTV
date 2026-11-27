@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
+import okhttp3.CookieJar
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -568,6 +571,12 @@ class ContentRepository(
 
     fun detail(id: String, type: ContentType = ContentType.SHORT): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
+        // 2026-11-27: the website /detail page stopped exposing numeric vids
+        // (only 5 "v1_" tokens for the first episodes), so the App API is the
+        // primary detail source (upstream v1.2.33 SeriesDetails →
+        // /novel/player/multi_video_detail/preload/v1). The website stays as
+        // the fallback for the few episodes it still serves.
+        runCatching { appDetail(id, type) }.getOrNull()?.let { return it }
         val data = extractRouter(webText("$site/detail?series_id=$id"))
         val loader = data.optJSONObject("loaderData") ?: throw IOException("剧集详情暂不可用")
         val page = (loader.keys().asSequence().mapNotNull { loader.optJSONObject(it) }
@@ -588,6 +597,117 @@ class ContentRepository(
             (0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) })
         return Detail(series, episodes, type)
     }
+
+    /**
+     * Current App detail endpoint (upstream desktop v1.2.33 `SeriesDetails`). Same
+     * signed v5 POST as the playback model channel: the website's /detail page
+     * only lists the first episodes and, since 2026-11, only as opaque tokens.
+     */
+    private fun appDetail(id: String, type: ContentType): Detail {
+        val now = clock()
+        val profile = playbackSession.profile(http)
+        val payload = JSONObject()
+            .put("series_id", id)
+            .put(
+                "biz_param",
+                JSONObject()
+                    .put("caller_scene", "single_col")
+                    .put("detail_page_version", 0)
+                    .put("disable_digg_stat", false)
+                    .put("disable_video_relate_book", false)
+                    .put("need_all_video_definition", true)
+                    .put("from_video_id", "")
+                    .put("use_os_player", false)
+                    .put("video_id_type", 0)
+                    .put("need_mp4_align", false)
+                    .put("use_server_dns", false)
+                    .put("source", 0)
+                    .put("screen_width_px", "1078"),
+            )
+        val gzip = gzip(payload.toString().toByteArray(Charsets.UTF_8))
+        val signed = Signer.sharedV5 { clock() }.signPlayback(
+            "$DETAIL_ENDPOINT",
+            currentQuery(profile) + ("_rticket" to now.toString()),
+            gzip,
+            now,
+        )
+        val request = Request.Builder()
+            .url(signed.url)
+            .header("User-Agent", playbackUa())
+            .header("Accept", "application/json")
+            .header("Content-Encoding", "gzip")
+            .header("x-ss-stub", md5(gzip))
+            .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
+            .post(gzip.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        val root = RequestScope.execute(transport.newCall(request)) { response ->
+            if (!response.isSuccessful) throw IOException("剧集详情请求失败（HTTP ${response.code}）")
+            val text = response.body?.string() ?: throw IOException("剧集详情响应为空")
+            if (text.isBlank()) throw IOException("剧集详情暂不可用")
+            JSONObject(text)
+        }
+        if (root.optInt("code", root.optInt("Code", -1)) != 0) throw IOException("剧集详情暂不可用")
+        val data = root.optJSONObject("data") ?: throw IOException("剧集详情暂不可用")
+        val entry = data.optJSONObject(id)
+            ?: data.keys().asSequence().mapNotNull { data.optJSONObject(it) }
+                .firstOrNull { it.optJSONObject("video_data") != null }
+            ?: throw IOException("剧集详情暂不可用")
+        val vd = entry.optJSONObject("video_data") ?: throw IOException("剧集详情暂不可用")
+        val list = vd.optJSONArray("video_list") ?: throw IOException("分集暂不可用")
+        val rows = (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+            .sortedBy { it.optInt("vid_index", 0) }
+        val episodes = rows.map { it.str("vid") }
+        if (episodes.isEmpty() || episodes.any { !it.matches(Regex("[0-9]{1,30}")) } ||
+            episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
+        val count = vd.optInt("episode_cnt", episodes.size)
+        val tagInfo = vd.optJSONObject("video_tag_info")
+        val tags = listOfNotNull(tagInfo?.str("text")).filter { it.isNotBlank() }
+        val series = Series(
+            id,
+            vd.str("series_title"),
+            cleanUrl(vd.str("series_cover")),
+            vd.str("series_intro"),
+            vd.str("episode_right_text").ifEmpty { if (count > 0) "全 $count 集" else "" },
+            tags.take(5).joinToString(" · "),
+        )
+        return Detail(series, episodes, type)
+    }
+
+    private fun currentQuery(profile: PlaybackDeviceSession.Profile): LinkedHashMap<String, String> =
+        linkedMapOf(
+            "aid" to "8662",
+            "app_name" to "novelread",
+            "version_code" to "74532",
+            "version_name" to "7.4.5.32",
+            "update_version_code" to "74532",
+            "manifest_version_code" to "74532",
+            "os" to "android",
+            "ssmix" to "a",
+            "channel" to "update_64",
+            "device_platform" to "android",
+            "device_type" to "25053RT47C",
+            "device_brand" to "Redmi",
+            "os_version" to "16",
+            "os_api" to "36",
+            "ac" to "wifi",
+            "language" to "zh",
+            "host_abi" to "arm64-v8a",
+            "iid" to profile.values.getValue("iid"),
+            "cdid" to profile.values.getValue("cdid"),
+            "device_id" to profile.values.getValue("device_id"),
+        )
+
+    private fun playbackUa(): String =
+        System.getProperty("http.agent")?.takeIf { it.isNotBlank() } ?: "okhttp/4.12.0"
+
+    private fun gzip(data: ByteArray): ByteArray =
+        java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(data) }
+        }.toByteArray()
+
+    private fun md5(data: ByteArray): String =
+        java.security.MessageDigest.getInstance("MD5").digest(data).joinToString("") { "%02X".format(it) }
 
     // ---------- stream: channel scheduler (App API first, public MP4 fallback) ----------
 
@@ -658,6 +778,8 @@ class ContentRepository(
 
     companion object {
         private val logger = java.util.logging.Logger.getLogger("com.hongguotv.core.stream")
+        private const val DETAIL_ENDPOINT =
+            "https://reading.snssdk.com/novel/player/multi_video_detail/preload/v1"
 
         fun extractRouter(html: String): JSONObject {
             val marker=html.indexOf("_ROUTER_DATA"); if(marker<0) throw IOException("页面没有内容数据")

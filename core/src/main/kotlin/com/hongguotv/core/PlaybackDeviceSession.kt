@@ -36,6 +36,8 @@ class PlaybackDeviceSession(
 
     private var cdid = UUID.randomUUID().toString()
     private var ready: Profile? = null
+    /** Independently registered spare identity (upstream v1.2.33 `SpareDevice`). */
+    private var spare: Profile? = null
 
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
@@ -86,6 +88,27 @@ class PlaybackDeviceSession(
     /** Playback uses the anonymous registered identity, so it is always rotatable. */
     internal fun playbackRotate(http: OkHttpClient): Boolean = rotate(http)
 
+    /**
+     * A second, independently registered anonymous identity. The empty-answer /
+     * 110001 shield is keyed to `device_id`, so when the main identity is cooled
+     * the spare is served at once. Registered lazily on the first main-identity
+     * tab failure and kept for the process life; a failed registration simply
+     * returns null and the caller keeps its normal failure path.
+     */
+    @Synchronized
+    internal fun spare(http: OkHttpClient): Profile? {
+        if (Thread.currentThread().isInterrupted) return null
+        spare?.let { return it }
+        val device =
+            try {
+                register(http) ?: return null
+            } catch (error: IOException) {
+                return null
+            }
+        if (!validDevice(device) || Thread.currentThread().isInterrupted) return null
+        return toProfile(device, UUID.randomUUID().toString()).also { spare = it }
+    }
+
     private fun registerDevice(http: OkHttpClient): DeviceRegister.Registered {
         val device =
             try {
@@ -103,13 +126,13 @@ class PlaybackDeviceSession(
     private fun validDevice(device: DeviceRegister.Registered) =
         validId.matches(device.deviceId) && validId.matches(device.installId)
 
-    private fun toProfile(device: DeviceRegister.Registered): Profile =
+    private fun toProfile(device: DeviceRegister.Registered, cdidValue: String = cdid): Profile =
         Profile(
             VendorConstants.device +
                 mapOf(
                     "device_id" to device.deviceId,
                     "iid" to device.installId,
-                    "cdid" to cdid,
+                    "cdid" to cdidValue,
                 ),
             device.cookies
                 .filterKeys {

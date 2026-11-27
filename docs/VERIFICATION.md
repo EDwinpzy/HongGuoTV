@@ -703,3 +703,40 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 异常扫描 | PASS | 全量 logcat 无 `FATAL EXCEPTION`、`ANR in`、`source-unavailable`、`ExoPlaybackException`、`hwc overlay number exceed limit` |
 
 限制：设备输入与截图均来自 ADB 注入，不能替代投影幕布上的人工长时间观察；未覆盖弱网、长时间连播、数小时播放和其他 TV 型号；对冲在首路健康时零额外请求，慢于 1.2s 时会多发 1–2 个 GET，对每身份请求配额的长期影响未实测。
+
+## 2026-11-27 上游桌面端 v1.2.33 逆向对照、详情接口迁移与备用设备（Debug 实机）
+
+验证分支为 `codex/playback-timeout-rea`，基于 `v1.1.24 / 3eb30fa`。S621 覆盖安装同签名 Debug 包（`versionName 1.1.24`，Debug 签名与 Release 一致），应用数据与登录态保留；设备输入均为 ADB 注入，不是物理遥控器。
+
+逆向对象为 `yangbin1322/hongguo-player` v1.2.33 的 Windows 发布产物（SHA-256 与 Release digest 一致）。该仓库不含源码；用静态解析恢复 Go pclntab 的 22,659 个函数名后定向反汇编，未执行二进制。观察到上游 `videoTabModel` 只用 `sinfonlineb`/`sinfonlinec` 两个 tab 主机、`SpareDevice` 备用设备池、`tabDeviceErr` 对 `110001` 的设备级归因，以及 `SeriesDetails` 走 App API `/novel/player/multi_video_detail/preload/v1`。
+
+实机首先暴露了一个比取流超时更靠前的阻塞点：网站 `/detail` 页不再暴露数字 `vid`，只返回前 5 集的 `v1_` 令牌，`detail()` 抛“分集数据异常”，任何剧都无法进入播放。按上游做法把详情改为 App API 优先（实测返回全部 785 集）后播放恢复。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 修复前基线 | FAIL | `1.1.24` 两部不同剧进入详情均显示“暂时无法加载 · 分集数据异常”；网站 `/detail` 实测 `vid_list` 为 5 个 `v1_*` 令牌 |
+| App 详情接口 | PASS | JVM live probe 请求 `/novel/player/multi_video_detail/preload/v1` 返回 HTTP 200，`video_list` 785 项，首集 `7697465535398677529` |
+| 详情页与首帧 | PASS | S621 “接着看”进入第 4 集，`Playback first frame episode=4 preloaded=false elapsedMs=3579`，1080P HEVC 出画，截图确认画面与字幕 |
+| 切集与预取 | PASS | 下键切到第 6 集 `preloaded=true reused=true elapsedMs=402`；后台 `Prepared episode 8 quality=1080P progress=2/20` |
+| 备用设备路径 | PASS（单测） | `MobilePlaybackStreamSourceTest.emptyMainTabAnswersAreRetriedOnASpareIdentity`：主身份 tab 全空后用预注册备用身份取回模型 |
+| tab 主机顺序 | PASS（单测） | `videoTab` 对冲顺序为 `sinfonlineb → sinfonlinec`，健康路径仍为 1 个请求 |
+| 回归 | PASS | `:core:test`（272 项）与 `:app:testDebugUnitTest` 通过；`Ep46DiagTest` 首轮因搜索临时为空失败，重跑通过 |
+
+限制：设备输入与截图均来自 ADB 注入，不能替代投影幕布上的人工长时间观察；未覆盖弱网、备用设备在真实风控下的命中、数小时连播和其他 TV 型号。上游为 Go + WebView2 桌面应用，可迁移的是网络层策略，媒体解码路径不同。
+
+## 2026-11-27 v1.1.25 S621 投影仪实机冒烟（Release 签名包）
+
+`v1.1.25 / 10125` 覆盖安装 JMGO S621，同签名覆盖、登录态与观看记录保留。设备输入均为 ADB 注入，不是物理遥控器。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 签名与版本 | PASS | `apksigner` 证书 SHA-256 `403BDDBE...13A5`，与已发布版本一致；`aapt2` 读取 `versionCode=10125 / versionName=1.1.25`；`install -r` 返回 Success |
+| 完整门禁 | PASS | `:core:test`（272 项）、`:app:testDebugUnitTest`、`:app:lintVitalRelease`、`:app:assembleRelease`、`:app:bundleRelease` 一次通过 |
+| 冷启动与首页 | PASS | `Home displayed cached=true elapsedMs=665`，无 FATAL EXCEPTION、ANR |
+| 详情与首帧 | PASS | “接着看”进入第 9 集，`Playback first frame episode=9 preloaded=false elapsedMs=3363`，`1080P/bytevc1/1920x1080`，截图确认画面 |
+| 预取 | PASS | `Prepared episode 10 quality=1080P progress=1/20` |
+| 异常扫描 | PASS | 全量 logcat 无 `FATAL EXCEPTION`、`ANR in`、`source-unavailable`、`ExoPlaybackException` |
+
+产物：APK SHA-256 `6D1033C6EF095D1B9A7EBFCFBFFEE1FB93D307B7BC2F8084564779D9F86E34F9`；AAB SHA-256 `4C010F0A24C84AD644227DD94BF33BCE2E1BBC7FB0FC01468CC26F9887B80123`。
+
+限制：设备输入与截图均来自 ADB 注入，不能替代投影幕布上的人工长时间观察；未覆盖弱网、备用设备在真实风控下的命中、数小时连播和其他 TV 型号。
