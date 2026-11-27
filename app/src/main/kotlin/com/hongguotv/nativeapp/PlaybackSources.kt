@@ -2,6 +2,7 @@
 package com.hongguotv.nativeapp
 
 import android.util.Log
+import androidx.media3.common.PlaybackException
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.ContentType
 import com.hongguotv.core.PlaybackBudget
@@ -389,6 +390,47 @@ internal fun shouldAutoDowngrade(
     currentQuality: Int,
 ): Boolean =
     attempts < maxAttempts && currentQuality > 0 && tiers.any { it.qualityValue in 1 until currentQuality }
+
+/**
+ * Transient failures should restart playback without taking over the TV with an
+ * error panel. Network timeouts and decoder shutdowns are often one-off on TV
+ * boxes; a deterministic source/capability failure is handled separately.
+ */
+internal fun isTransientPlaybackErrorCode(errorCode: Int): Boolean =
+    errorCode in 2000..2999 ||
+        errorCode == PlaybackException.ERROR_CODE_TIMEOUT ||
+        errorCode in
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..
+                PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+
+internal fun isTransientPlaybackFailure(problem: Throwable): Boolean =
+    generateSequence(problem) { it.cause }.take(8).any { cause ->
+        when (cause) {
+            is PlaybackException -> isTransientPlaybackErrorCode(cause.errorCode)
+            is java.net.SocketTimeoutException,
+            is java.net.ConnectException,
+            is java.net.SocketException,
+            is java.io.InterruptedIOException,
+            is java.io.EOFException -> true
+            is java.io.IOException -> cause.message?.let { message ->
+                message.contains("超时") ||
+                    message.contains("timeout", ignoreCase=true) ||
+                    message.contains("连接重置") ||
+                    message.contains("connection reset", ignoreCase=true) ||
+                    message.contains("分段读取中断") ||
+                    message.contains("视频资源已变化")
+            } == true
+            else -> false
+        }
+    }
+
+/** Last-resort quality for a decoder timeout when the ladder exposed no lower tier. */
+internal fun recoveryQualityFallback(attemptedQuality: Int): Int? =
+    when {
+        attemptedQuality > 720 -> 720
+        attemptedQuality > 480 -> 480
+        else -> null
+    }
 
 /**
  * Display modes to try, best first. Native cadence wins when the panel exposes it;

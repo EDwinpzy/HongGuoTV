@@ -1,5 +1,6 @@
 package com.hongguotv.nativeapp
 
+import androidx.media3.common.PlaybackException
 import com.hongguotv.core.StreamInfo
 import com.hongguotv.core.VideoTracks
 import org.junit.Assert.assertEquals
@@ -122,6 +123,26 @@ class PlaybackSelectionTest {
         assertThrows(NoPlayableQualityException::class.java) {
             throwNoOpenedStream(listOf(primary),null)
         }
+    }
+
+    @Test fun silentRecoveryCoversNetworkAndDecoderTimeoutsButNotMalformedSources() {
+        assertTrue(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT))
+        assertTrue(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_TIMEOUT))
+        assertTrue(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_DECODING_FAILED))
+        assertTrue(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED))
+        assertFalse(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED))
+        assertTrue(isTransientPlaybackFailure(SocketTimeoutException("视频读取超时")))
+        assertTrue(isTransientPlaybackFailure(java.io.EOFException("视频分段意外结束")))
+        assertTrue(isTransientPlaybackFailure(java.io.IOException("视频资源已变化，请重试")))
+        assertFalse(isTransientPlaybackFailure(NoPlayableQualityException()))
+    }
+
+    @Test fun decoderTimeoutFallsBackOneQualityStep() {
+        assertEquals(720, recoveryQualityFallback(1080))
+        assertEquals(480, recoveryQualityFallback(720))
+        assertEquals(480, recoveryQualityFallback(576))
+        assertEquals(null, recoveryQualityFallback(480))
+        assertEquals(null, recoveryQualityFallback(0))
     }
 
     @Test fun cancellationIsNotConvertedIntoAnotherTierAttempt() {

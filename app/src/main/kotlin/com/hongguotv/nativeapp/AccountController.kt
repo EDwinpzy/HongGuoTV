@@ -180,7 +180,6 @@ class AccountController(
     private var busy = false
     private var lastUpload = 0L
     private var lastEpisode = ""
-    private var uploadFailures = 0
     private var lastSyncAt = 0L
     private var lastReservationPull = 0L
     private var reservationSyncPending = false
@@ -1289,7 +1288,7 @@ class AccountController(
             main.post {
                 if (closed) return@post
                 if (failed > 0)
-                    toast("有 ${failed} 部观看记录上传失败，稍后进入最近观看页会自动重试")
+                    android.util.Log.w("HongguoAccount", "history upload failures=$failed")
             }
         }
     }
@@ -1533,15 +1532,9 @@ class AccountController(
             main.post {
                 if (closed) return@post
                 if (token == generation) {
-                    // Silent success (a toast per 30s-throttled upload would nag); a failure
-                    // must be visible or "TV didn't sync to phone" looks like a dead feature.
-                    if (result.isSuccess) {
-                        uploadFailures = 0
-                    } else {
-                        uploadFailures++
-                        if (uploadFailures == 1)
-                            toast("进度上传失败：${safeError(result.exceptionOrNull()!!)}")
-                    }
+                    // Automatic uploads stay silent even on failure. Transient network
+                    // errors must not interrupt playback with a floating toast; the
+                    // account page still exposes the latest sync status.
                     status =
                         if (result.isSuccess) "播放进度已上传（请在手机端核对续播）"
                         else "进度上传失败：${safeError(result.exceptionOrNull()!!)}"

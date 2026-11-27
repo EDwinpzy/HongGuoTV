@@ -37,6 +37,8 @@ class MainActivity: Activity() {
         const val PREFETCH_BUFFER_NEAR_MS=10_000L
         const val PREFETCH_BUFFER_FAR_MS=25_000L
         const val PREFETCH_BUFFER_PAUSE_MS=15_000L
+        const val PLAYER_CONTROLS_AUTO_HIDE_MS=4_000L
+        const val DANMAKU_EMPTY_PAGE_RETRIES=3
     }
     private val bg=TvStyle.background; private val surface=TvStyle.surface
     private val accent=TvStyle.accent; private val white=TvStyle.text; private val muted=TvStyle.muted
@@ -63,6 +65,7 @@ class MainActivity: Activity() {
     // Verified-downgrade state (upstream 2026-11-14 capability port): the picked tier,
     // its real coded size from the MP4 header, and the full ladder of this episode.
     private var autoDowngrades=0
+    private var autoQualityFallbacks=0
     private var forceBestOnNextPlay=false
     private var attemptedQuality=0
     private var currentTrack: VideoTracks.Track?=null
@@ -253,6 +256,7 @@ class MainActivity: Activity() {
     private val recovery=RecoveryBudget()
     private var retryPending=false
     private var autoRecovery=false
+    private var recoveryStableSince=0L
     private var startPosition=0L
     private var retryPosition=0L
     private var requestedAutoplay=true
@@ -273,7 +277,9 @@ class MainActivity: Activity() {
             if(!networkAvailable()) scheduleRecovery()
             else if(recovery.consume()) {
                 android.util.Log.i("HongguoTV","Automatic playback recovery ${recovery.attempts}/3 at ${retryPosition}ms")
-                playEpisode(episodeIndex,retryPosition,retryAutoplay,recovering=true)
+                if(!retryPlaybackInPlace()) {
+                    playEpisode(episodeIndex,retryPosition,retryAutoplay,recovering=true)
+                }
             }
         }
     }
@@ -359,6 +365,17 @@ class MainActivity: Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel=false
+    private val autoHidePlaybackControls: Runnable=object: Runnable {
+        override fun run() {
+            if(!playbackControlsMayAutoHide()) return
+            if(playerSidebar!=null || speedDialog?.isShowing==true || tvTools.showing || !hasWindowFocus()) {
+                main.postDelayed(autoHidePlaybackControls,PLAYER_CONTROLS_AUTO_HIDE_MS)
+                return
+            }
+            android.util.Log.i("HongguoTV","Playback controls auto-hidden")
+            hidePlaybackOverlay()
+        }
+    }
     private var transportPlay: ImageView?=null
     private var sleepButton: TextView?=null
     private var speedDialog: android.app.Dialog?=null
@@ -397,6 +414,18 @@ class MainActivity: Activity() {
                     else currentTier?.let { CodecCapabilities.confirmPlayable(it.codec,it.width,it.height) }
                 }
                 val now=android.os.SystemClock.elapsedRealtime()
+                if(recoveryStableSince>0L) {
+                    if(playbackReady && !playError && playing?.isPlaying==true) {
+                        if(now-recoveryStableSince>=20_000L) {
+                            recovery.reset()
+                            autoQualityFallbacks=0
+                            recoveryStableSince=0L
+                            android.util.Log.i("HongguoTV","Playback stable after recovery; retry budget reset")
+                        }
+                    } else {
+                        recoveryStableSince=0L
+                    }
+                }
                 if(player?.isPlaying==true && now-lastSaved>5000) { saveProgress(); lastSaved=now }
             }
             main.postDelayed(this,1000)
@@ -2600,7 +2629,7 @@ class MainActivity: Activity() {
             }
         }
     }
-    private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false,autoDowngrade: Boolean=false,saveCurrent: Boolean=true) {
+    private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false,autoDowngrade: Boolean=false,saveCurrent: Boolean=true,qualityOverride: Int?=null) {
         updater.interrupt()
         cancelCatalogPrefetch()
         val forceBest=forceBestOnNextPlay
@@ -2613,7 +2642,7 @@ class MainActivity: Activity() {
         stopDanmakuFetch()
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
-        val playQuality=if(recommendationFeedMode) recommendationQuality else library.maxQuality
+        val playQuality=qualityOverride ?: if(recommendationFeedMode) recommendationQuality else library.maxQuality
         val selectedKey="${data.episodes[selectedIndex]}:$playQuality"
         stopPrefetch()
         val prepared=if(!recovering) preparedEpisodes.remove(selectedKey) else null
@@ -2638,13 +2667,18 @@ class MainActivity: Activity() {
         playbackHttp=prepared?.http; video=prefetched?.video
         var firstReady=true; var firstFrame=true
         if(!recovering) recovery.reset()
-        autoRecovery=false; readySince=0; startPosition=position.coerceAtLeast(0); requestedAutoplay=autoplay
+        autoRecovery=false; recoveryStableSince=0L
+        readySince=0; startPosition=position.coerceAtLeast(0); requestedAutoplay=autoplay
+        retryPosition=startPosition
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; episodeSection=selectedIndex/20
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
         danmakuDurationMs=0L; danmakuPlayheadMs=0L
-        // A fresh episode resets the downgrade budget; an auto-downgrade retry keeps it.
-        if(!autoDowngrade) autoDowngrades=0
+        // A fresh episode resets the downgrade budget; automatic/recovery retries keep it.
+        if(!recovering && !autoDowngrade) {
+            autoDowngrades=0
+            autoQualityFallbacks=0
+        }
         attemptedQuality=0; currentTrack=null; currentTier=null; currentTiers=emptyList()
         failureLearnedForAttempt=false; capabilityConfirmedForAttempt=false
         player?.playWhenReady=requestedAutoplay
@@ -2855,6 +2889,10 @@ class MainActivity: Activity() {
                             return
                         }
                         playbackReady=true
+                        progressBar.visibility=View.VISIBLE
+                        if(recovery.attempts>0 && recoveryStableSince==0L) {
+                            recoveryStableSince=android.os.SystemClock.elapsedRealtime()
+                        }
                         danmakuDurationMs=p.duration.takeIf { it>0 && it!=C.TIME_UNSET } ?: 0L
                         playbackSpinner?.visibility=View.GONE
                         if(firstFrame && firstFrameWatchdog==null) {
@@ -2914,6 +2952,7 @@ class MainActivity: Activity() {
                 }
                 override fun onIsPlayingChanged(playing: Boolean) {
                     if(!active()) return
+                    if(playing) schedulePlaybackControlsAutoHide() else cancelPlaybackControlsAutoHide()
                     if(playing && firstFrame && firstFrameWatchdog==null) {
                         firstFrameWatchdog=watchdog
                         main.postDelayed(watchdog, 12_000L)
@@ -2926,7 +2965,7 @@ class MainActivity: Activity() {
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
             }
             playerListener=listener; p.addListener(listener)
-            val source=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(MediaItem.Builder().setMediaId(requestedId).setUri("hongguotv://episode/$requestedId").setMimeType(MimeTypes.VIDEO_MP4).build())
+            val source=playbackSource(remote,requestedId)
             p.setMediaSource(source); p.seekTo(position.coerceAtLeast(0)); p.prepare()
             p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && playerSidebar==null
             // The new source owns the surface now. Only then detach the previous
@@ -3123,20 +3162,61 @@ class MainActivity: Activity() {
     }
     private fun networkAvailable(): Boolean = connectivity.getNetworkCapabilities(connectivity.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)==true
     private fun currentPosition(): Long = pendingSeek ?: player?.currentPosition?.takeIf { playbackReady } ?: startPosition
+    private fun playbackSource(remote: RemoteVideo,id: String) =
+        ProgressiveMediaSource.Factory { VideoDataSource(remote) }
+            .createMediaSource(
+                MediaItem.Builder()
+                    .setMediaId(id)
+                    .setUri("hongguotv://episode/$id")
+                    .setMimeType(MimeTypes.VIDEO_MP4)
+                    .build(),
+            )
+    /** Rebuild decoder/network state on the existing RemoteVideo without an error screen. */
+    private fun retryPlaybackInPlace(): Boolean {
+        if(!foreground || screen!="player" || !networkAvailable()) return false
+        val p=player ?: return false
+        val remote=video ?: return false
+        val id=detail?.episodes?.getOrNull(episodeIndex) ?: return false
+        firstFrameWatchdog?.let { main.removeCallbacks(it) }
+        firstFrameWatchdog=null
+        playError=false; autoRecovery=false; retryPending=false; recoveryStableSince=0L
+        playbackReady=false
+        if(panel) hidePlaybackOverlay()
+        playbackText.visibility=View.GONE
+        progressBar.visibility=View.GONE
+        p.setMediaSource(playbackSource(remote,id))
+        p.seekTo(retryPosition.coerceAtLeast(0))
+        p.prepare()
+        p.playWhenReady=foreground && retryAutoplay && !sleepStopped && playerSidebar==null
+        syncMediaSession()
+        android.util.Log.i(
+            "HongguoTV",
+            "Silent playback restart at ${retryPosition}ms (attempt ${recovery.attempts}/3)",
+        )
+        return true
+    }
     private fun cancelRecovery() { main.removeCallbacks(retryRunnable); retryPending=false; autoRecovery=false }
     private fun scheduleRecovery() {
         if(!foreground || !playError || !autoRecovery || retryPending) return
-        if(!recovery.remaining) { autoRecovery=false; playbackText.text="已自动重试 3 次，仍无法播放。可手动重试或切换清晰度。"; return }
-        if(!networkAvailable()) { playbackText.text="网络已断开，联网后自动续播 · 第 ${episodeIndex+1} 集 ${formatTime(retryPosition)}"; return }
+        if(!recovery.remaining) {
+            autoRecovery=false
+            if(panel) playbackText.text="已自动重试 3 次，仍无法播放。可手动重试或切换清晰度。"
+            return
+        }
+        if(!networkAvailable()) {
+            if(panel) playbackText.text="网络已断开，联网后自动续播 · 第 ${episodeIndex+1} 集 ${formatTime(retryPosition)}"
+            return
+        }
         val delay=recovery.delayMillis ?: return
-        playbackText.text="${if(retryAutoplay) "准备恢复播放" else "准备恢复暂停位置"} · ${delay/1000f} 秒后重试 ${recovery.attempts+1}/3 · ${formatTime(retryPosition)}"
+        if(panel) playbackText.text="${if(retryAutoplay) "准备恢复播放" else "准备恢复暂停位置"} · ${delay/1000f} 秒后重试 ${recovery.attempts+1}/3 · ${formatTime(retryPosition)}"
         retryPending=true; main.postDelayed(retryRunnable,delay)
     }
     private fun playerFailure(problem: Throwable) {
         firstFrameWatchdog?.let { main.removeCallbacks(it) }
         firstFrameWatchdog=null
-        revealPlaybackVideo()
-        retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=requestedAutoplay && !sleepStopped
+        recoveryStableSince=0L
+        if(playbackReady) retryPosition=currentPosition().coerceAtLeast(0)
+        retryAutoplay=requestedAutoplay && !sleepStopped
         saveProgress(); cancelRecovery(); cancelPrefetch()
         // Deterministic failure (no decodable tier on this box): retrying and
         // downgrading only reproduce it, so no auto-recovery budget / lower button.
@@ -3146,6 +3226,7 @@ class MainActivity: Activity() {
         // worse, so this category requires a manual retry.
         val sourceUnavailable=generateSequence(problem){ it.cause }.take(8)
             .any { it is PlaybackSourceUnavailableException }
+        val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
         // MediaCodecList over-reporting: the box claimed it could decode this codec/size
         // but the runtime failed. Learn the exact geometry (codec|width|height) and
         // retry one tier lower automatically instead of showing the error panel -
@@ -3167,15 +3248,43 @@ class MainActivity: Activity() {
                 return
             }
         }
+        val transient=!noPlayableQuality && !sourceUnavailable &&
+            isTransientPlaybackFailure(problem) && !sleepStopped
+        if(transient && recovery.remaining) {
+            if(decoding && recovery.attempts>0 && autoQualityFallbacks==0) {
+                val fallback=recoveryQualityFallback(attemptedQuality)
+                if(fallback!=null && recovery.consume()) {
+                    autoQualityFallbacks++
+                    android.util.Log.w(
+                        "HongguoTV",
+                        "Silent quality fallback after decoder timeout: "+
+                            "${attemptedQuality}P -> ${fallback}P (attempt ${recovery.attempts}/3)",
+                    )
+                    playEpisode(
+                        episodeIndex,retryPosition,retryAutoplay,
+                        recovering=true,autoDowngrade=true,qualityOverride=fallback,
+                    )
+                    return
+                }
+            }
+            playError=true
+            autoRecovery=true
+            android.util.Log.w(
+                "HongguoTV",
+                "Silent playback recovery scheduled (attempt ${recovery.attempts+1}/3) "+
+                    (if(problem is PlaybackException) "code=${problem.errorCodeName}" else problem.javaClass.simpleName),
+            )
+            scheduleRecovery()
+            return
+        }
+        revealPlaybackVideo()
         playError=true
+        cancelPlaybackControlsAutoHide()
         hideRecommendationInfo()
         player?.pause(); progressBar.visibility=View.GONE; playbackSpinner?.visibility=View.GONE
         playbackText.visibility=View.VISIBLE
         hud.visibility=View.VISIBLE; controls.removeAllViews(); controls.visibility=View.VISIBLE; panel=true
-        val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
-        val retryable=!sourceUnavailable && (
-            if(problem is PlaybackException) problem.errorCode in 2000..2999 || problem.errorCode==PlaybackException.ERROR_CODE_TIMEOUT
-            else problem is java.io.IOException)
+        val retryable=!sourceUnavailable && isTransientPlaybackFailure(problem)
         playbackText.text=when {
             sourceUnavailable -> "片源接口暂时不可用，已停止自动重试。请稍后手动重试或切换剧集。"
             decoding -> "电视无法解码当前视频，可尝试更低清晰度。"
@@ -3217,16 +3326,25 @@ class MainActivity: Activity() {
         if(recommendationFeedMode) {
             addButton(actions,"下一条推荐") { switchRecommendationFeed(1) }
         }
-        if(retryable && !sleepStopped && !noPlayableQuality) {
+        if(retryable && recovery.remaining && !sleepStopped && !noPlayableQuality) {
             addButton(controls,"停止自动重试") { cancelRecovery(); playbackText.text="自动重试已停止，观看位置已保留。" }
             autoRecovery=true; scheduleRecovery()
         }
         android.util.Log.w("HongguoTV","Playback failure: ${problem.javaClass.simpleName}"+(if(problem is PlaybackException) " code=${problem.errorCodeName}" else ""))
     }
     private fun hidePlaybackOverlay() {
+        cancelPlaybackControlsAutoHide()
         panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
         playerChannelNav?.visibility=if(recommendationFeedMode) View.VISIBLE else View.GONE
     }
+    private fun playbackControlsMayAutoHide()=
+        screen=="player" && !recommendationFeedMode && !playError && panel &&
+            hud.visibility==View.VISIBLE && player?.isPlaying==true
+    private fun schedulePlaybackControlsAutoHide() {
+        main.removeCallbacks(autoHidePlaybackControls)
+        if(playbackControlsMayAutoHide()) main.postDelayed(autoHidePlaybackControls,PLAYER_CONTROLS_AUTO_HIDE_MS)
+    }
+    private fun cancelPlaybackControlsAutoHide() { main.removeCallbacks(autoHidePlaybackControls) }
     /**
      * Recommendation preview stays visually separate from the normal player: title and
      * synopsis are always visible, while OK hands the current stream over to the normal
@@ -3265,8 +3383,10 @@ class MainActivity: Activity() {
     private fun showHud() {
         if(screen!="player" || recommendationFeedMode) return
         hud.visibility=View.VISIBLE
+        progressBar.visibility=View.VISIBLE
         playerChannelNav?.visibility=View.GONE
         updatePlaybackText()
+        schedulePlaybackControlsAutoHide()
     }
     /** video-pro style transport: one play button, elapsed / scrubber / remaining. */
     private fun buildPlaybackControls() {
@@ -3338,6 +3458,7 @@ class MainActivity: Activity() {
         if(!play) { player?.pause(); retryAutoplay=false; saveProgress() }
         else if(playError) { playEpisode(episodeIndex,retryPosition,true); return }
         else if(playerSidebar==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
+        if(!play) cancelPlaybackControlsAutoHide()
         if(!play) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if(hud.visibility==View.VISIBLE) updatePlaybackText()
@@ -3483,6 +3604,7 @@ class MainActivity: Activity() {
             val seen=mutableSetOf<String>()
             val seenTexts=DanmakuTextDeduper()
             var failures=0
+            var emptyPageRetries=0
             try {
                 while(!Thread.currentThread().isInterrupted) {
                     val duration=danmakuDurationMs
@@ -3505,6 +3627,23 @@ class MainActivity: Activity() {
                         continue
                     }
                     failures=0
+                    // The comment API can answer HTTP 200 with an empty data_list while
+                    // common_list_info.total still reports comments. Treating that as
+                    // the end of the episode makes the whole danmaku layer disappear
+                    // until the next episode. Retry the same window before advancing.
+                    if(page.isEmptyButHasComments() && emptyPageRetries<DANMAKU_EMPTY_PAGE_RETRIES) {
+                        emptyPageRetries++
+                        val delayMs=minOf(8_000L,1_000L shl (emptyPageRetries-1))
+                        android.util.Log.w(
+                            "HongguoTV",
+                            "Danmaku empty page episode=$videoId window=${request.timeMs/1000}s "+
+                                "total=${page.total} retry=$emptyPageRetries/$DANMAKU_EMPTY_PAGE_RETRIES "+
+                                "in=${delayMs}ms",
+                        )
+                        Thread.sleep(delayMs)
+                        continue
+                    }
+                    if(page.items.isNotEmpty()) emptyPageRetries=0
                     val fresh=buildList {
                         for(item in page.items) {
                             if(!seen.add(item.id)) continue
@@ -3762,7 +3901,7 @@ class MainActivity: Activity() {
         )
     }
     private fun releasePlayer() {
-        cancelRecovery(); cancelPrefetch(); mediaSession.deactivate(); tvTools.close()
+        cancelRecovery(); cancelPrefetch(); cancelPlaybackControlsAutoHide(); mediaSession.deactivate(); tvTools.close()
         firstFrameWatchdog?.let { main.removeCallbacks(it) }
         firstFrameWatchdog=null
         hideRecommendationInfo()
@@ -3892,6 +4031,7 @@ class MainActivity: Activity() {
     @Deprecated("TV remote back is handled through the activity")
     override fun onBackPressed()=goBack()
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if(screen=="player" && panel && event.action==KeyEvent.ACTION_DOWN) schedulePlaybackControlsAutoHide()
         if(event.action==KeyEvent.ACTION_DOWN && event.keyCode!=KeyEvent.KEYCODE_BACK) {
             exitArmed=false
             main.removeCallbacks(disarmExit)
@@ -4009,7 +4149,7 @@ class MainActivity: Activity() {
     }
     override fun onPause() {
         updater.pause()
-        foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
+        foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); cancelPlaybackControlsAutoHide(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true
         player?.pause(); saveProgress(); library.flush(); super.onPause()
     }
