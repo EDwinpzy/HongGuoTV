@@ -908,3 +908,22 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 推荐播放冒烟 | PASS | 安装后进入推荐自动出画（《反派魔君太疯狂，整治女频靠装糖》），无 `FATAL EXCEPTION` |
 
 限制：DNS 故障无法在不影响 S621 的 ADB 无线连接的前提下稳定注入，本轮的“DNS → 静默重试 → 恢复”链路由单测和代码路径验证，未做真机 DNS 断链复现；重试 3 次仍失败时失败面板仍会出现（这是最后兜底，不再代表首错即弹）。
+
+## 2026-11-28 封面整页空白：设备解码器泄漏导致过载（Debug 实机）
+
+用户反馈 AI 剧、短剧页全部没有封面，只剩标题和集数。排查确认不是接口或解析问题：
+
+- 本地缓存的 `home-ai` / `home-comic` 快照里 `cover` 字段完整，PC 用同一 User-Agent 抓取分类页也返回 `p3-novel.byteimg.com` 的 JPEG。
+- 设备侧 DNS 正常，`toybox nc` 连接三个封面/接口域名的 443 端口均成功（139–422 ms）。
+- `top` 显示 load average 54、内存 1.7G/1.9G，`android.hardware.media.c2@1.1-mediatek` 累计占用 818 分钟 CPU 且持续 100%+，`logd` 也被拖到 40%+。App 的封面请求在资源耗尽时被静默丢弃，`ArtworkLoader` 又把失败标记为终态，所以整页一直是空框。
+
+处理与验证：
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 重启 S621 | PASS | 重启后首页“接着看”、短剧货架封面全部恢复，AI 剧同样正常 |
+| 构建与单测 | PASS | `:app:assembleDebug`、`:app:testDebugUnitTest` 通过 |
+| 自动重试 | 代码路径 | 每个封面绑定失败后 3 秒自动重试一次，仍失败才保持空框 |
+| 失败可观测 | PASS（代码） | 下载失败、非 2xx、解码失败、慢于 1.5 秒的封面都会写 `HongguoTV` WARN 日志 |
+
+限制：解码器泄漏的客户端没有定位（重启后 `mediacodec` 计数清零）；若再次出现封面全空，先看 `top` 里的 `mediacodec` 和 `dumpsys media.codec` 客户端，而不是重复清缓存。图片重试逻辑未在故障现场复现，只验证了正常网络下不影响出图。

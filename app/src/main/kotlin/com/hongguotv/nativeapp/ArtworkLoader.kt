@@ -9,10 +9,13 @@ import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.LruCache
+import android.util.Log
 import android.view.View
 import android.widget.ImageView
 import okhttp3.Call
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
@@ -42,6 +45,7 @@ class ArtworkLoader(context: Context) {
         var key: Key? = null
         var applied: Key? = null
         var failed: Key? = null
+        var retried = false
         lateinit var layout: View.OnLayoutChangeListener
         lateinit var attach: View.OnAttachStateChangeListener
     }
@@ -108,7 +112,7 @@ class ArtworkLoader(context: Context) {
         // A malformed layout cannot ask an old TV to allocate a full-screen, multi-megapixel thumbnail.
         val scale = min(1.0, 1024.0 / max(width, height))
         val key = Key(binding.url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
-        if (binding.key != key) { detachJob(binding); binding.key = key; binding.failed = null }
+        if (binding.key != key) { detachJob(binding); binding.key = key; binding.failed = null; binding.retried = false }
         if (binding.applied == key || binding.failed == key) return
         cache.get(key)?.let { bitmap -> view.setImageBitmap(bitmap); binding.applied = key; return }
         var cancelled: Job? = null
@@ -223,7 +227,20 @@ class ArtworkLoader(context: Context) {
                         val view = binding.view.get()
                         if (view != null && bindings[view] === binding && binding.key == job.key) {
                             if (bitmap != null) { view.setImageBitmap(bitmap); binding.applied = job.key }
-                            else binding.failed = job.key
+                            else {
+                                binding.failed = job.key
+                                // A TV under memory/decoder pressure can drop every cover request for a
+                                // short window. Retry each binding once so posters come back without a restart.
+                                if (!binding.retried) {
+                                    binding.retried = true
+                                    main.postDelayed({
+                                        if (bindings[view] === binding && binding.failed == job.key) {
+                                            binding.failed = null
+                                            request(binding)
+                                        }
+                                    }, 3_000L)
+                                }
+                            }
                         }
                     }
                     refillVisible()
@@ -243,7 +260,12 @@ class ArtworkLoader(context: Context) {
     private fun fetch(job: Job): Bitmap? {
         val bytes = download(job, job.key.url) ?: return null
         if (job.cancelled) return null
-        return decode(bytes, job) ?: heicFallback(job)
+        val decoded = decode(bytes, job)
+        if (decoded == null && !job.cancelled) {
+            Log.w("HongguoTV","Artwork decode failed bytes=${bytes.size} host=${hostOf(job.key.url)}")
+            return heicFallback(job)
+        }
+        return decoded
     }
 
     /**
@@ -270,26 +292,45 @@ class ArtworkLoader(context: Context) {
         val cached = disk.get(url)
         if (cached != null) return cached
         if (job.cancelled) return null
+        val started = SystemClock.elapsedRealtime()
         val call = http.newCall(Request.Builder().url(url).build())
         job.call = call
         if (job.cancelled) { call.cancel(); return null }
-        call.execute().use { response ->
-            val body = response.body ?: return null
-            if (!response.isSuccessful || body.contentLength() > MAX_BYTES) return null
-            val out = ByteArrayOutputStream()
-            val buffer = ByteArray(8192)
-            body.byteStream().use { input ->
-                while (!job.cancelled) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    if (out.size() + count > MAX_BYTES) return null
-                    out.write(buffer, 0, count)
+        try {
+            call.execute().use { response ->
+                val body = response.body ?: return null
+                if (!response.isSuccessful || body.contentLength() > MAX_BYTES) {
+                    Log.w("HongguoTV","Artwork HTTP ${response.code} host=${hostOf(url)} bytes=${body.contentLength()}")
+                    return null
                 }
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                body.byteStream().use { input ->
+                    while (!job.cancelled) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (out.size() + count > MAX_BYTES) return null
+                        out.write(buffer, 0, count)
+                    }
+                }
+                if (job.cancelled) return null
+                val bytes = out.toByteArray()
+                val elapsed = SystemClock.elapsedRealtime() - started
+                if (elapsed > 1_500) Log.w("HongguoTV","Artwork slow host=${hostOf(url)} bytes=${bytes.size} elapsedMs=$elapsed")
+                return bytes.also { disk.put(url, it) }
             }
-            if (job.cancelled) return null
-            return out.toByteArray().also { disk.put(url, it) }
+        } catch (problem: Exception) {
+            if (!job.cancelled) Log.w(
+                "HongguoTV",
+                "Artwork failed host=${hostOf(url)} ${problem.javaClass.simpleName}: "+
+                    "${problem.message?.take(100)} elapsedMs=${SystemClock.elapsedRealtime() - started}",
+            )
+            throw problem
         }
     }
+
+    private fun hostOf(url: String): String =
+        runCatching { url.toHttpUrl().host }.getOrDefault("-")
 
     private fun decode(bytes: ByteArray, job: Job): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
