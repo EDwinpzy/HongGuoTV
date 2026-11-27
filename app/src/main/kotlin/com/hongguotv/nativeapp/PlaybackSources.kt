@@ -393,8 +393,9 @@ internal fun shouldAutoDowngrade(
 
 /**
  * Transient failures should restart playback without taking over the TV with an
- * error panel. Network timeouts and decoder shutdowns are often one-off on TV
- * boxes; a deterministic source/capability failure is handled separately.
+ * error panel. DNS misses, network timeouts and decoder shutdowns are often
+ * one-off on TV boxes; a deterministic source/capability failure is handled
+ * separately.
  */
 internal fun isTransientPlaybackErrorCode(errorCode: Int): Boolean =
     errorCode in 2000..2999 ||
@@ -407,6 +408,7 @@ internal fun isTransientPlaybackFailure(problem: Throwable): Boolean =
     generateSequence(problem) { it.cause }.take(8).any { cause ->
         when (cause) {
             is PlaybackException -> isTransientPlaybackErrorCode(cause.errorCode)
+            is java.net.UnknownHostException,
             is java.net.SocketTimeoutException,
             is java.net.ConnectException,
             is java.net.SocketException,

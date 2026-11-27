@@ -10,6 +10,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 class PlaybackSelectionTest {
     private val hdHevc=StreamInfo("https://signed/1080.mp4",null,"1080P","bytevc1",1080,1920,1080)
@@ -132,6 +133,7 @@ class PlaybackSelectionTest {
         assertTrue(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED))
         assertFalse(isTransientPlaybackErrorCode(PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED))
         assertTrue(isTransientPlaybackFailure(SocketTimeoutException("视频读取超时")))
+        assertTrue(isTransientPlaybackFailure(UnknownHostException("Unable to resolve host \"api5-normal-sinfonlinea.fqnovel.com\"")))
         assertTrue(isTransientPlaybackFailure(java.io.EOFException("视频分段意外结束")))
         assertTrue(isTransientPlaybackFailure(java.io.IOException("视频资源已变化，请重试")))
         assertFalse(isTransientPlaybackFailure(NoPlayableQualityException()))

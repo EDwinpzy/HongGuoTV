@@ -889,3 +889,22 @@ $adb = 'C:\Users\63054\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | 播放与稳定性 | PASS | 最终 Debug 包覆盖安装后进入推荐自动出画；`crash` buffer 与 `lastanr` 无目标应用 `FATAL EXCEPTION` / ANR |
 
 限制：设备输入为 ADB 注入而非物理遥控器，只覆盖 S621；标题族按名称合并，同名但实际无关的两部剧可能被误判为同族；7 天过期窗口为经验值，长时间连播耗尽推荐池的边界未做小时级压测。
+
+## 2026-11-28 播放 DNS 解析失败不再直接弹失败面板（Debug 实机冒烟）
+
+用户反馈推荐播放出现“播放失败，可重试或切换清晰度”，诊断行为 `S621 · Android 13 · v1.1.28 · 恢复 0/3 · UnknownHostException`。根因是 `UnknownHostException` 没有列入 `isTransientPlaybackFailure`：它不匹配任何超时/重置关键字，恢复预算一次都没有消耗，失败面板直接出现。
+
+本次修改：
+
+- `UnknownHostException` 归入可自动恢复的网络故障，沿用现有 1s / 2.5s / 5s 三次静默重试；重试期间不抢占画面。
+- 三次仍失败时面板改为“网络域名解析失败，请检查网络或 DNS 后重试。”，不再使用笼统的“播放失败”。
+- 断网场景仍由网络回调等待联网后自动续播，不消耗恢复次数。
+
+| 场景 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 单测 | PASS | `PlaybackSelectionTest` 新增 `UnknownHostException` 断言，18 项全部通过 |
+| 构建 | PASS | `:app:testDebugUnitTest`、`:app:assembleDebug` 通过 |
+| S621 覆盖安装 | PASS | Debug 包覆盖安装成功，应用数据与账号登录态保留 |
+| 推荐播放冒烟 | PASS | 安装后进入推荐自动出画（《反派魔君太疯狂，整治女频靠装糖》），无 `FATAL EXCEPTION` |
+
+限制：DNS 故障无法在不影响 S621 的 ADB 无线连接的前提下稳定注入，本轮的“DNS → 静默重试 → 恢复”链路由单测和代码路径验证，未做真机 DNS 断链复现；重试 3 次仍失败时失败面板仍会出现（这是最后兜底，不再代表首错即弹）。

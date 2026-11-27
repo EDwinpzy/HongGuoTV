@@ -3238,6 +3238,8 @@ class MainActivity: Activity() {
         val sourceUnavailable=generateSequence(problem){ it.cause }.take(8)
             .any { it is PlaybackSourceUnavailableException }
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
+        val dnsFailure=generateSequence(problem){ it.cause }.take(8)
+            .any { it is java.net.UnknownHostException }
         // MediaCodecList over-reporting: the box claimed it could decode this codec/size
         // but the runtime failed. Learn the exact geometry (codec|width|height) and
         // retry one tier lower automatically instead of showing the error panel -
@@ -3298,6 +3300,7 @@ class MainActivity: Activity() {
         val retryable=!sourceUnavailable && isTransientPlaybackFailure(problem)
         playbackText.text=when {
             sourceUnavailable -> "片源接口暂时不可用，已停止自动重试。请稍后手动重试或切换剧集。"
+            dnsFailure -> "网络域名解析失败，请检查网络或 DNS 后重试。"
             decoding -> "电视无法解码当前视频，可尝试更低清晰度。"
             else -> "播放失败，可重试或切换清晰度。"
         }
